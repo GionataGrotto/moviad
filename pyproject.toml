@@ -10,7 +10,8 @@ requires-python = ">=3.13"
 dependencies = [
     "calflops>=0.3.2",
     "einops>=0.8.1",
-    "faiss-gpu-cu11>=1.13.0",
+    "faiss-cpu>=1.13.0; sys_platform == 'win32'",
+    "faiss-gpu-cu11>=1.13.0; sys_platform != 'win32'",
     "librosa>=0.11.0",
     "matplotlib>=3.10.7",
     "memory-profiler>=0.61.0",
@@ -22,11 +23,15 @@ dependencies = [
     "scikit-image>=0.25.2",
     "scikit-learn>=1.7.2",
     "seaborn>=0.13.2",
+    "scipy>=1.16.0",
     "thop>=0.1.1.post2209072238",
     "torch>=2.9.1",
+    "torchaudio>=2.9.1",
+    "torchlibrosa>=0.1.0",
     "torchvision>=0.24.1",
     "tqdm>=4.67.1",
     "transformers>=4.57.3",
+    "soundata>=1.0.1",
     "wandb>=0.23.1",
 ]
 
