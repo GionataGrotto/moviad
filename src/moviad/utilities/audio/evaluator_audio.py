@@ -1,77 +1,55 @@
-from __future__ import annotations
-import os
-from typing import Union, Optional, Tuple
+﻿from __future__ import annotations
 
-import pandas as pd
+from typing import Optional, Union
+
+import numpy as np
+import torch
 from tqdm import tqdm
 
-import torch
-from sklearn.metrics import precision_score, recall_score, f1_score
-import matplotlib.pyplot as plt
-import cv2 as cv
-
-from ..metrics import *
+from ..metrics import cal_f1_img, cal_img_roc, cal_pr_auc_img
 
 
 def min_max_norm(x):
-    return (x - x.min()) / (x.max() - x.min())
+    d = x.max() - x.min()
+    return (x - x.min()) / d if d != 0 else x
 
 
 class AudioEvaluator:
-    """
-    This class will evaluate the trained model on the test set
-    and it will produce the evaluation metrics needed
-
-    Args:
-        test_dataloader (Dataloader): test dataloader
-        device (torch.device): device where to run the model
-    """
+    """Small evaluator used by the legacy audio utilities."""
 
     def __init__(self, test_dataloader, device):
-        """
-        Args:
-            test_dataloader (Dataloader): test dataloader, the images should already be normalized
-            device (torch.device): device where to run the model
-        """
         self.test_dataloader = test_dataloader
         self.device = device
 
-    def evaluate(self, model, output_path = False):
-        """
-        Args:
-            model: a model object on which you can call model.predict(batched_audio)
-                and returns a tuple of anomaly_maps and anomaly_scores
-            output_path (str): path where to store the output masks
-        """
+    @staticmethod
+    def _unpack_batch(batch):
+        if len(batch) == 5:
+            return batch[0], batch[1], batch[2]
+        if len(batch) == 4:
+            return batch[0], batch[1], batch[2]
+        if len(batch) == 3:
+            return batch
+        raise ValueError(f"Unsupported batch structure with {len(batch)} elements")
 
+    def evaluate(self, model, output_path: bool = False):
         model.eval()
 
-        # Initialize results.
-        true_labels, pred_labels = (list(), list())
+        true_labels, pred_labels = [], []
 
-        for audio, label, _  in tqdm(self.test_dataloader, desc="Eval"):
-            # get anomaly map and score
+        for batch in tqdm(self.test_dataloader, desc="Eval"):
+            audio, label, _ = self._unpack_batch(batch)
             with torch.no_grad():
-                anomaly_maps, anomaly_scores = model(audio.to(self.device))
+                outputs = model(audio.to(self.device))
+                anomaly_maps, anomaly_scores = outputs[:2]
 
-            true_labels.extend(label.cpu().numpy())
-            pred_labels.extend(anomaly_scores.cpu().numpy())
-
+            true_labels.extend(np.atleast_1d(label.cpu().numpy()))
+            pred_labels.extend(np.atleast_1d(anomaly_scores.cpu().numpy()))
 
         true_labels = np.asarray(true_labels)
         pred_labels = np.asarray(pred_labels)
 
-        # image level ROC AUC
-        fpr, tpr, img_roc_auc = cal_img_roc(pred_labels, true_labels)
-
-        # image level F1
+        img_roc_auc = cal_img_roc(pred_labels, true_labels)[2]
         f1_img = cal_f1_img(pred_labels, true_labels)
-
-        # image level PR AUC
         pr_auc_img = cal_pr_auc_img(pred_labels, true_labels)
 
-        return (
-            img_roc_auc,
-            f1_img,
-            pr_auc_img,
-        )
+        return img_roc_auc, f1_img, pr_auc_img

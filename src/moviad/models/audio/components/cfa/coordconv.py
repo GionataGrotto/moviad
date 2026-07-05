@@ -48,10 +48,11 @@ class AddCoords(nn.Module):
         xx_channel = xx_channel.repeat(batch_size_shape, 1, 1, 1)
         yy_channel = yy_channel.repeat(batch_size_shape, 1, 1, 1)
 
-        if torch.cuda.is_available and self.use_cuda:
-            input_tensor = input_tensor.cuda()
-            xx_channel = xx_channel.cuda()
-            yy_channel = yy_channel.cuda()
+        if torch.cuda.is_available() and self.use_cuda:
+            device = input_tensor.device
+            input_tensor = input_tensor.to(device)
+            xx_channel = xx_channel.to(device)
+            yy_channel = yy_channel.to(device)
         out = torch.cat([input_tensor, xx_channel, yy_channel], dim=1)
 
         if self.with_r:

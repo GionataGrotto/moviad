@@ -35,10 +35,26 @@ def parse_args() -> argparse.Namespace:
 
 
 def machine_ids(dataset_path: Path, snr: str, category: str) -> list[str]:
-    category_dir = dataset_path / snr / category
-    if not category_dir.exists():
-        raise FileNotFoundError(f"MIMII category directory not found: {category_dir}")
-    return sorted(path.name for path in category_dir.iterdir() if path.is_dir())
+    candidates = [
+        dataset_path / snr / category,
+        dataset_path / category,
+        dataset_path,
+    ]
+
+    for base in candidates:
+        if not base.exists():
+            continue
+        ids = sorted(
+            path.name
+            for path in base.iterdir()
+            if path.is_dir() and path.name.startswith("id_")
+        )
+        if ids:
+            return ids
+
+    raise FileNotFoundError(
+        f"MIMII machine directories not found under {dataset_path} for snr={snr}, category={category}"
+    )
 
 
 def build_loaders(config: dict, dataset_path: Path, snr: str, category: str, machine_id: str, seed: int):
@@ -110,7 +126,7 @@ def run_one(
 
     started = time.perf_counter()
     fit_model(method, model, train_loader, test_loader, config, device, debug)
-    metrics = evaluate_model(model, test_loader, device, MIMII_METRICS)
+    metrics = evaluate_model(model, test_loader, device, MIMII_METRICS, debug=debug, max_batches=int(config.get("debug_max_batches", 2)))
     elapsed = time.perf_counter() - started
 
     return {

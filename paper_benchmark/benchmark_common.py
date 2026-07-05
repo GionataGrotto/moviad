@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import csv
 import json
@@ -204,7 +204,8 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
 
         model.initialize_memory_bank(train_iter)
         train_iter = limited(train_loader, debug, max_batches)
-        trainer = TrainerCFA(model, train_iter, test_loader, wandb=False, device=str(device))
+        eval_iter = limited(test_loader, debug, max_batches)
+        trainer = TrainerCFA(model, train_iter, eval_iter, wandb=False, device=str(device))
         trainer.train(int(config.get("epochs", 1)), ["f1_img", "img_roc_auc", "pr_auc_img"], None)
         model.eval()
         return
@@ -212,7 +213,8 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
     if method == "stfpm":
         from moviad.trainers.audio.trainer_stfpm import TrainerSTFPM
 
-        trainer = TrainerSTFPM(model, train_iter, test_loader, wandb=False, device=str(device))
+        eval_iter = limited(test_loader, debug, max_batches)
+        trainer = TrainerSTFPM(model, train_iter, eval_iter, wandb=False, device=str(device))
         trainer.train(int(config.get("epochs", 1)), ["f1_img", "img_roc_auc", "pr_auc_img"], None)
         model.eval()
         return
@@ -220,10 +222,18 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
     raise ValueError(f"Unsupported method: {method}")
 
 
-def evaluate_model(model, test_loader, device: torch.device, metrics: list[str]) -> dict[str, float]:
+def evaluate_model(
+    model,
+    test_loader,
+    device: torch.device,
+    metrics: list[str],
+    debug: bool = False,
+    max_batches: int = 2,
+) -> dict[str, float]:
     from moviad.utilities.evaluator import Evaluator
 
-    evaluator = Evaluator(test_loader, device)
+    test_iter = limited(test_loader, debug, max_batches)
+    evaluator = Evaluator(test_iter, device)
     result = evaluator.evaluate(model, metrics_to_compute=metrics, metrics_to_dict=True)
     return {key: float(value) for key, value in result.items()}
 
