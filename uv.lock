@@ -1061,6 +1061,7 @@ dependencies = [
     { name = "micromind" },
     { name = "opencv-python" },
     { name = "pandas" },
+    { name = "pillow" },
     { name = "pytest" },
     { name = "rich" },
     { name = "scikit-image" },
@@ -1069,6 +1070,7 @@ dependencies = [
     { name = "seaborn" },
     { name = "soundata" },
     { name = "thop" },
+    { name = "timm" },
     { name = "torch" },
     { name = "torchaudio" },
     { name = "torchlibrosa" },
@@ -1096,6 +1098,7 @@ requires-dist = [
     { name = "micromind", specifier = ">=0.2.1" },
     { name = "opencv-python", specifier = ">=4.12.0.88" },
     { name = "pandas", specifier = ">=2.3.3" },
+    { name = "pillow", specifier = ">=12.0.0" },
     { name = "pytest", specifier = ">=9.0.1" },
     { name = "rich", specifier = ">=14.2.0" },
     { name = "scikit-image", specifier = ">=0.25.2" },
@@ -1104,6 +1107,7 @@ requires-dist = [
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "soundata", specifier = ">=1.0.1" },
     { name = "thop", specifier = ">=0.1.1.post2209072238" },
+    { name = "timm", specifier = ">=1.0.22" },
     { name = "torch", specifier = ">=2.9.1" },
     { name = "torchaudio", specifier = ">=2.9.1" },
     { name = "torchlibrosa", specifier = ">=0.1.0" },
@@ -2515,6 +2519,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/2d/b5/0d8f3d395f07d25ec4cafcdfc8cab234b2cc6bf2465e9d7660633983fe8f/tifffile-2025.10.16.tar.gz", hash = "sha256:425179ec7837ac0e07bc95d2ea5bea9b179ce854967c12ba07fc3f093e58efc1", size = 371848, upload-time = "2025-10-16T22:56:09.043Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e6/5e/56c751afab61336cf0e7aa671b134255a30f15f59cd9e04f59c598a37ff5/tifffile-2025.10.16-py3-none-any.whl", hash = "sha256:41463d979c1c262b0a5cdef2a7f95f0388a072ad82d899458b154a48609d759c", size = 231162, upload-time = "2025-10-16T22:56:07.214Z" },
+]
+
+[[package]]
+name = "timm"
+version = "1.0.28"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "pyyaml" },
+    { name = "safetensors" },
+    { name = "torch" },
+    { name = "torchvision" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/35/03/e41389ac641747bfec48d016fde8be1eade1901e6f2c1aedcb0c8cb4b5d9/timm-1.0.28.tar.gz", hash = "sha256:3789d313fdd5541a327b60180d70dbb4bdec73db8ff0655e413db3c3d134a9a4", size = 2451413, upload-time = "2026-07-11T17:24:32.615Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c1/76/de1bfac17d183c49c6d0887903d3064ced51cf1d9ba7a8d611c1a8808c4f/timm-1.0.28-py3-none-any.whl", hash = "sha256:e577b88da96b3a722ea5e2f042455ce6f715d398304d8e63b17d126ed7d89968", size = 2597944, upload-time = "2026-07-11T17:24:30.869Z" },
 ]
 
 [[package]]
