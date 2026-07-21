@@ -182,7 +182,12 @@ results/paper_benchmark/report.md
 
 Il report aggrega le righe dei CSV e mostra media +/- deviazione standard per gruppo.
 
-## 10. Ordine consigliato
+## 10. Faithfulness su EnvMix
+
+Gli script EnvMix calcolano anche ff_v1 e ff_v2 per CFA, PaDiM, PatchCore e STFPM. La soglia di FF v2 e configurabile nel campo faithfulness.v2_threshold della config.
+
+I valori vengono salvati in envmix_results.csv e inclusi nel report aggregato.
+## 11. Ordine consigliato
 
 Esegui in questo ordine:
 

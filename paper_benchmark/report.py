@@ -22,6 +22,8 @@ METRIC_COLUMNS = [
     "f1_tmp",
     "tmp_auc_roc",
     "pr_auc_tmp",
+    "ff_v1",
+    "ff_v2",
 ]
 
 

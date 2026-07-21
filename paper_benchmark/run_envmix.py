@@ -53,7 +53,7 @@ def build_loaders(config: dict, background_category: str, snr_db: float, seed: i
     feature_extractor = make_feature_extractor(config, device, frozen=True)
     max_samples = envmix.get("max_samples_debug") if debug else None
 
-    train_dataset, test_dataset, _ = generate_urban_esc_V1(
+    train_dataset, test_dataset, test_dataset_ff = generate_urban_esc_V1(
         urban_category=background_category,
         esc50_categories=envmix["esc50_anomaly_categories"],
         wav_to_spectro=feature_extractor.spectro_transform,
@@ -77,13 +77,19 @@ def build_loaders(config: dict, background_category: str, snr_db: float, seed: i
         shuffle=False,
         num_workers=int(config["num_workers"]),
     )
-    return train_dataset, test_dataset, train_loader, test_loader
+    faithfulness_loader = DataLoader(
+        test_dataset_ff,
+        batch_size=int(config["batch_size"]),
+        shuffle=False,
+        num_workers=int(config["num_workers"]),
+    )
+    return train_dataset, test_dataset, train_loader, test_loader, faithfulness_loader
 
 
 def run_one(method: str, config: dict, background_category: str, snr_db: float, seed: int, debug: bool) -> dict:
     device = resolve_device(config["device"])
     set_seed(seed)
-    train_dataset, test_dataset, train_loader, test_loader = build_loaders(
+    train_dataset, test_dataset, train_loader, test_loader, faithfulness_loader = build_loaders(
         config, background_category, snr_db, seed, debug
     )
     if len(train_dataset) == 0 or len(test_dataset) == 0:
@@ -95,6 +101,40 @@ def run_one(method: str, config: dict, background_category: str, snr_db: float, 
     started = time.perf_counter()
     fit_model(method, model, train_loader, test_loader, config, device, debug)
     metrics = evaluate_model(model, test_loader, device, ENVMIX_METRICS)
+    faithfulness = {}
+    if config.get("faithfulness", {}).get("enabled", True):
+        from moviad.utilities.faithfulness import (
+            audio_spectro_transform,
+            compute_faithfulness,
+            compute_faithfulness_v2,
+        )
+
+        spectro_transform = audio_spectro_transform(model)
+        faithfulness_iter = faithfulness_loader
+        if debug:
+            faithfulness_iter = limited(
+                faithfulness_loader, True, int(config.get("debug_max_batches", 2))
+            )
+        faithfulness["ff_v1"] = float(
+            compute_faithfulness(
+                model, faithfulness_iter, float(snr_db), spectro_transform, device
+            ).mean()
+        )
+
+        faithfulness_iter = faithfulness_loader
+        if debug:
+            faithfulness_iter = limited(
+                faithfulness_loader, True, int(config.get("debug_max_batches", 2))
+            )
+        faithfulness["ff_v2"] = float(
+            compute_faithfulness_v2(
+                model,
+                faithfulness_iter,
+                float(config.get("faithfulness", {}).get("v2_threshold", 0.5)),
+                spectro_transform,
+                device,
+            ).mean()
+        )
     elapsed = time.perf_counter() - started
 
     return {
@@ -113,6 +153,7 @@ def run_one(method: str, config: dict, background_category: str, snr_db: float, 
         "memory_bank_size": config.get("memory_bank_size"),
         "epochs": config.get("epochs"),
         **metrics,
+        **faithfulness,
     }
 
 

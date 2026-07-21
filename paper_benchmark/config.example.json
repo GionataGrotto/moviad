@@ -8,6 +8,10 @@
   "num_workers": 0,
   "force_cpu_coreset": true,
   "methods": ["patchcore"],
+  "faithfulness": {
+    "enabled": true,
+    "v2_threshold": 0.5
+  },
   "epochs": 1,
   "memory_bank_size": 30000,
   "debug_max_batches": 2,
