@@ -1,0 +1,61 @@
+{
+  "device": "cuda",
+  "output_dir": "results/paper_benchmark",
+  "backbone": "Cnn14",
+  "layers": ["conv_block2", "conv_block3", "conv_block4"],
+  "pretrained": true,
+  "batch_size": 4,
+  "num_workers": 0,
+  "force_cpu_coreset": true,
+  "methods": ["patchcore", "padim", "cfa", "stfpm"],
+  "faithfulness": {
+    "enabled": true,
+    "v2_threshold": 0.5
+  },
+  "epochs": 1,
+  "memory_bank_size": 30000,
+  "debug_max_batches": 2,
+  "mimii": {
+    "dataset_path": "/home/manuel_barusco/datasets/mimii",
+    "snrs": ["0_db", "6_db", "m6_db"],
+    "categories": ["fan", "pump", "slider", "valve"],
+    "seeds": [42, 43],
+    "max_machines": null
+  },
+  "envmix": {
+    "urban_path": "/home/manuel_barusco/datasets/UrbanSound8K",
+    "esc50_path": "/home/manuel_barusco/datasets/ESC-50",
+    "background_categories": [
+      "air_conditioner",
+      "engine_idling",
+      "street_music",
+      "drilling",
+      "car_horn",
+      "jackhammer",
+      "children_playing",
+      "siren"
+    ],
+    "esc50_anomaly_categories": [
+      "glass_breaking",
+      "coughing",
+      "sneezing",
+      "door_wood_knock",
+      "rooster",
+      "can_opening",
+      "car_horn",
+      "dog",
+      "laughing",
+      "door_wood_creaks",
+      "clock_alarm",
+      "clapping",
+      "sheep",
+      "snoring",
+      "fireworks",
+      "washing_machine",
+      "frog"
+    ],
+    "snr_db": [6.0, 0.0, -6.0],
+    "seeds": [0, 1, 2],
+    "max_samples_debug": 20
+  }
+}
