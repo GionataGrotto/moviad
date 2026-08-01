@@ -4,6 +4,7 @@ import argparse
 import time
 
 import torch
+from moviad.datasets.audio_dataset import SpectrogramBinarizer
 from torch.utils.data import DataLoader
 
 from benchmark_common import (
@@ -100,7 +101,13 @@ def run_one(method: str, config: dict, background_category: str, snr_db: float, 
 
     started = time.perf_counter()
     fit_model(method, model, train_loader, test_loader, config, device, debug)
-    metrics = evaluate_model(model, test_loader, device, ENVMIX_METRICS)
+    metrics = evaluate_model(
+        model,
+        test_loader,
+        device,
+        ENVMIX_METRICS,
+        binarize_masks=lambda masks: SpectrogramBinarizer.by_energy_threshold(0.4, masks),
+    )
     faithfulness = {}
     if config.get("faithfulness", {}).get("enabled", True):
         from moviad.utilities.faithfulness import (

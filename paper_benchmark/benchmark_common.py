@@ -229,12 +229,19 @@ def evaluate_model(
     metrics: list[str],
     debug: bool = False,
     max_batches: int = 2,
+    binarize_masks=None,
 ) -> dict[str, float]:
     from moviad.utilities.evaluator import Evaluator
 
     test_iter = limited(test_loader, debug, max_batches)
     evaluator = Evaluator(test_iter, device)
-    result = evaluator.evaluate(model, metrics_to_compute=metrics, metrics_to_dict=True)
+    evaluate_kwargs = {
+        'metrics_to_compute': metrics,
+        'metrics_to_dict': True,
+    }
+    if binarize_masks is not None:
+        evaluate_kwargs['binarize_masks'] = binarize_masks
+    result = evaluator.evaluate(model, **evaluate_kwargs)
     return {key: float(value) for key, value in result.items()}
 
 
