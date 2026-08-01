@@ -83,6 +83,7 @@ def compute_faithfulness(
     device: torch.device,
 ) -> np.ndarray:
     """FF v1: suppress the predicted anomaly regions and measure score drop."""
+    wav_to_spectro = wav_to_spectro.to(device)
     extractors, previous = _spectrogram_mode(model)
     scores, modified_scores = [], []
     snr_scale = None if snr_db is None else 1 + 10 ** (float(snr_db) / 20)
@@ -114,6 +115,7 @@ def compute_faithfulness_v2(
     device: torch.device,
 ) -> np.ndarray:
     """FF v2: replace predicted anomaly regions with the clean background."""
+    wav_to_spectro = wav_to_spectro.to(device)
     extractors, previous = _spectrogram_mode(model)
     scores, modified_scores = [], []
     model.eval()
