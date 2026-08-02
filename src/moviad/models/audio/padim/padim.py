@@ -305,26 +305,25 @@ class Padim(AudioVADModel):
         return super().load_state_dict(state_dict, strict=strict)
 
     def compute_distances(self, embedding_vectors: torch.Tensor):
-        """
-        Compute the Mahalanobis distances between the embedding vectors and the
-        multivariate Gaussian distribution.
-        """
-        B, C, H, W = embedding_vectors.size()
-        _embedding_vectors = embedding_vectors.view(B, C, H * W).cpu().numpy()
-        dist_list = []
+        """Compute Mahalanobis distances for all patches in one vectorized pass."""
+        batch_size, channels, height, width = embedding_vectors.size()
+        patch_count = height * width
+        embeddings = embedding_vectors.view(batch_size, channels, patch_count).cpu().numpy()
+        embeddings = np.moveaxis(embeddings, 1, 2)  # (batch, patch, channel)
+
         assert (
             self.gauss_mean is not None and self.gauss_cov is not None
         ), "The model must be trained first."
-        # compute each patch-embedding distance
-        for i in range(H * W):
-            mean = self.gauss_mean[:, i]
-            cov_inv = np.linalg.inv(self.gauss_cov[:, :, i])
-            dist = [
-                mahalanobis(sample[:, i], mean, cov_inv) for sample in _embedding_vectors
-            ]
-            dist_list.append(dist)
-        dist_list = np.array(dist_list).transpose(1, 0).reshape(B, H, W)
-        return torch.tensor(dist_list)
+
+        means = np.moveaxis(self.gauss_mean, 1, 0)  # (patch, channel)
+        covariances = np.moveaxis(self.gauss_cov, 2, 0)  # (patch, channel, channel)
+        covariance_inverses = np.linalg.inv(covariances)
+        deltas = embeddings - means[None, :, :]
+        squared_distances = np.einsum(
+            "bpc,pcd,bpd->bp", deltas, covariance_inverses, deltas
+        )
+        distances = np.sqrt(np.maximum(squared_distances, 0.0))
+        return torch.from_numpy(distances.reshape(batch_size, height, width))
 
     def reset_model(self):
         self.train_outputs = None
