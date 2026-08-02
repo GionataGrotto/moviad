@@ -171,8 +171,9 @@ class Padim(AudioVADModel):
             )
         # dimensionality reduction: select the random dimensions to reduce the embedding vectors
         assert embedding_vectors.size(1) == self.t_d, f"wront embedding size {self.t_d}, true one is: {embedding_vectors.size(1)}"
+        random_dimensions = self.random_dimensions.to(embedding_vectors.device)
         embedding_vectors = torch.index_select(
-            embedding_vectors.to(self.device), 1, self.random_dimensions
+            embedding_vectors, 1, random_dimensions
         )
         return embedding_vectors
 

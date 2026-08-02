@@ -148,7 +148,7 @@ class PatchCore(AudioVADModel):
         if self.training:
             output = embedding
         else:
-            self.memory_bank.to(self.device)
+            self.memory_bank = self.memory_bank.to(self.device)
 
             # apply nearest neighbor search
             patch_scores, locations = self.nearest_neighbors(

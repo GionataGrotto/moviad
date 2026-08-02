@@ -56,7 +56,8 @@ class TrainerPatchCore:
 
                 # print(f"Embedding Shape: {embedding.shape}")
 
-                embeddings.append(embedding)
+                # Keep the full training embedding set on CPU until coreset extraction.
+                embeddings.append(embedding.cpu())
 
             embeddings = torch.cat(embeddings, dim=0)
 
