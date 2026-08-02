@@ -47,10 +47,10 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_loaders(config: dict, background_category: str, snr_db: float, seed: int, debug: bool):
+def build_loaders(config: dict, background_category: str, snr_db: float, seed: int, debug: bool, method: str):
     from moviad.datasets.audio_dataset import generate_urban_esc_V1
 
-    device = resolve_device(config["device"])
+    device = resolve_device(config.get(f"{method}_device", config["device"]))
     envmix = config["envmix"]
     feature_extractor = make_feature_extractor(config, device, frozen=True)
     max_samples = envmix.get("max_samples_debug") if debug else None
@@ -89,10 +89,10 @@ def build_loaders(config: dict, background_category: str, snr_db: float, seed: i
 
 
 def run_one(method: str, config: dict, background_category: str, snr_db: float, seed: int, debug: bool) -> dict:
-    device = resolve_device(config["device"])
+    device = resolve_device(config.get(f"{method}_device", config["device"]))
     set_seed(seed)
     train_dataset, test_dataset, train_loader, test_loader, faithfulness_loader = build_loaders(
-        config, background_category, snr_db, seed, debug
+        config, background_category, snr_db, seed, debug, method
     )
     if len(train_dataset) == 0 or len(test_dataset) == 0:
         raise RuntimeError(f"Empty EnvMix split for background={background_category}, seed={seed}.")

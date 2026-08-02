@@ -57,12 +57,12 @@ def machine_ids(dataset_path: Path, snr: str, category: str) -> list[str]:
     )
 
 
-def build_loaders(config: dict, dataset_path: Path, snr: str, category: str, machine_id: str, seed: int):
+def build_loaders(config: dict, dataset_path: Path, snr: str, category: str, machine_id: str, seed: int, method: str):
     from moviad.datasets.mimi_dataset import MIMIDataset
     from moviad.utilities.configurations import Split
     from benchmark_common import make_feature_extractor
 
-    device = resolve_device(config["device"])
+    device = resolve_device(config.get(f"{method}_device", config["device"]))
     transform = Resample(orig_freq=16000, new_freq=44100)
     feature_extractor = make_feature_extractor(config, device, frozen=True)
 
@@ -110,10 +110,10 @@ def run_one(
     seed: int,
     debug: bool,
 ) -> dict:
-    device = resolve_device(config["device"])
+    device = resolve_device(config.get(f"{method}_device", config["device"]))
     set_seed(seed)
     train_dataset, test_dataset, train_loader, test_loader = build_loaders(
-        config, dataset_path, snr, category, machine_id, seed
+        config, dataset_path, snr, category, machine_id, seed, method
     )
     if len(train_dataset) == 0 or len(test_dataset) == 0:
         raise RuntimeError(

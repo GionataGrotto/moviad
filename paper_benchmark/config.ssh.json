@@ -1,5 +1,6 @@
 {
   "device": "cuda",
+  "patchcore_device": "cpu",
   "output_dir": "results/paper_benchmark",
   "backbone": "Cnn14",
   "layers": ["conv_block2", "conv_block3", "conv_block4"],

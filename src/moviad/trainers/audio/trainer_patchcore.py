@@ -45,30 +45,23 @@ class TrainerPatchCore:
         embeddings = []
 
         with torch.no_grad():
-
             print("Embedding Extraction:")
             for batch in tqdm(iter(self.train_dataloader)):
-
                 if isinstance(batch, tuple):
                     embedding = self.patchore_model(batch[0].to(self.device))
                 else:
                     embedding = self.patchore_model(batch.to(self.device))
 
-                # print(f"Embedding Shape: {embedding.shape}")
-
-                # Keep the full training embedding set on CPU until coreset extraction.
                 embeddings.append(embedding.cpu())
 
             embeddings = torch.cat(embeddings, dim=0)
-
             torch.cuda.empty_cache()
 
-            # apply coreset reduction
             print("Coreset Extraction:")
             sampler = KCenterGreedy(embeddings, self.device)
             sampled_idxs = sampler.get_coreset_idx_randomp(
-                embeddings.cpu(), memory_bank_size=self.patchore_model.memory_bank_size, force_cpu=self.force_cpu
+                embeddings,
+                memory_bank_size=self.patchore_model.memory_bank_size,
+                force_cpu=self.force_cpu,
             )
-            coreset = embeddings[sampled_idxs]
-
-            self.patchore_model.memory_bank = coreset
+            self.patchore_model.memory_bank = embeddings[sampled_idxs]
