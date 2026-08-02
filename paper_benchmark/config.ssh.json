@@ -4,7 +4,7 @@
   "backbone": "Cnn14",
   "layers": ["conv_block2", "conv_block3", "conv_block4"],
   "pretrained": true,
-  "batch_size": 4,
+  "batch_size": 1,
   "num_workers": 0,
   "force_cpu_coreset": true,
   "methods": ["patchcore", "padim", "cfa", "stfpm"],
