@@ -12,7 +12,7 @@
     "enabled": true,
     "v2_threshold": 0.5
   },
-  "epochs": 1,
+  "epochs": 50,
   "memory_bank_size": 30000,
   "debug_max_batches": 2,
   "mimii": {
