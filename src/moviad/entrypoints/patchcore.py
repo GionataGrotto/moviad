@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from tqdm import tqdm
 from moviad.common.args import Args
 from moviad.datasets.builder import DatasetFactory
+from moviad.datasets.subset import training_subset
 from moviad.datasets.vad_dataset import IadDataset
 from moviad.entrypoints.common import load_datasets
 from moviad.trainers.batched_trainer_patchcore import BatchPatchCoreTrainer
@@ -39,6 +40,7 @@ def train_patchcore(args: PatchCoreArgs, logger=None) -> None:
             "k_centroids": args.k
         }, allow_val_change=True)
     train_dataset, test_dataset = load_datasets(args.dataset_config, args.dataset_type, args.category, image_size=args.img_input_size)
+    train_dataset = training_subset(train_dataset, args.subset, args.seed)
     feature_extractor = CustomFeatureExtractor(args.backbone, args.ad_layers, args.device, True, False, None)
 
     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,

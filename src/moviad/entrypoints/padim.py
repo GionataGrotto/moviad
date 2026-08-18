@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 from dataclasses import dataclass
 
 from moviad.common.args import Args
+from moviad.datasets.subset import training_subset
 from moviad.datasets.vad_dataset import IadDataset
 from moviad.entrypoints.common import load_datasets
 from moviad.models.padim.padim import Padim
@@ -30,6 +31,7 @@ class PadimArgs(Args):
 
 def train_padim(args: PadimArgs, logger=None) -> None:
     train_dataset, test_dataset = load_datasets(args.dataset_config, args.dataset_type, args.category)
+    train_dataset = training_subset(train_dataset, args.subset, args.seed)
     padim = Padim(
         args.backbone,
         args.category,

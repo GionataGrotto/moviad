@@ -5,6 +5,7 @@ import time
 
 import torch
 from moviad.datasets.audio_dataset import SpectrogramBinarizer
+from moviad.datasets.subset import training_subset
 from torch.utils.data import DataLoader
 
 from benchmark_common import (
@@ -44,10 +45,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="paper_benchmark/config.example.json")
     parser.add_argument("--debug", action="store_true", help="Run a tiny subset.")
     parser.add_argument("--methods", nargs="+", help="Override config methods.")
+    parser.add_argument(
+        "--subset",
+        nargs="?",
+        const=0.5,
+        default=1.0,
+        type=float,
+        metavar="FRACTION",
+        help="Use a fraction of the training set (default with no value: 0.5).",
+    )
     return parser.parse_args()
 
 
-def build_loaders(config: dict, background_category: str, snr_db: float, seed: int, debug: bool, method: str):
+def build_loaders(
+    config: dict,
+    background_category: str,
+    snr_db: float,
+    seed: int,
+    debug: bool,
+    method: str,
+    subset: float = 1.0,
+):
     from moviad.datasets.audio_dataset import generate_urban_esc_V1
 
     device = resolve_device(config.get(f"{method}_device", config["device"]))
@@ -65,6 +83,7 @@ def build_loaders(config: dict, background_category: str, snr_db: float, seed: i
         seed=int(seed),
         max_num_samples=max_samples,
     )
+    train_dataset = training_subset(train_dataset, subset, seed)
     generator = torch.Generator().manual_seed(seed)
     train_loader = DataLoader(
         train_dataset,
@@ -88,11 +107,19 @@ def build_loaders(config: dict, background_category: str, snr_db: float, seed: i
     return train_dataset, test_dataset, train_loader, test_loader, faithfulness_loader
 
 
-def run_one(method: str, config: dict, background_category: str, snr_db: float, seed: int, debug: bool) -> dict:
+def run_one(
+    method: str,
+    config: dict,
+    background_category: str,
+    snr_db: float,
+    seed: int,
+    debug: bool,
+    subset: float = 1.0,
+) -> dict:
     device = resolve_device(config.get(f"{method}_device", config["device"]))
     set_seed(seed)
     train_dataset, test_dataset, train_loader, test_loader, faithfulness_loader = build_loaders(
-        config, background_category, snr_db, seed, debug, method
+        config, background_category, snr_db, seed, debug, method, subset
     )
     if len(train_dataset) == 0 or len(test_dataset) == 0:
         raise RuntimeError(f"Empty EnvMix split for background={background_category}, seed={seed}.")
@@ -194,7 +221,15 @@ def main() -> None:
             for snr_db in snrs:
                 for seed in seeds:
                     print(f"[EnvMix] method={method} background={background_category} snr_db={snr_db} seed={seed}")
-                    row = run_one(method, config, background_category, float(snr_db), int(seed), args.debug)
+                    row = run_one(
+                        method,
+                        config,
+                        background_category,
+                        float(snr_db),
+                        int(seed),
+                        args.debug,
+                        args.subset,
+                    )
                     append_csv(result_path, row)
                     print(row)
 

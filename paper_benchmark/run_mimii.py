@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 from torchaudio.transforms import Resample
+from moviad.datasets.subset import training_subset
 
 from benchmark_common import (
     append_csv,
@@ -31,6 +32,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="paper_benchmark/config.example.json")
     parser.add_argument("--debug", action="store_true", help="Run a tiny subset.")
     parser.add_argument("--methods", nargs="+", help="Override config methods.")
+    parser.add_argument(
+        "--subset",
+        nargs="?",
+        const=0.5,
+        default=1.0,
+        type=float,
+        metavar="FRACTION",
+        help="Use a fraction of the training set (default with no value: 0.5).",
+    )
     return parser.parse_args()
 
 
@@ -57,7 +67,16 @@ def machine_ids(dataset_path: Path, snr: str, category: str) -> list[str]:
     )
 
 
-def build_loaders(config: dict, dataset_path: Path, snr: str, category: str, machine_id: str, seed: int, method: str):
+def build_loaders(
+    config: dict,
+    dataset_path: Path,
+    snr: str,
+    category: str,
+    machine_id: str,
+    seed: int,
+    method: str,
+    subset: float = 1.0,
+):
     from moviad.datasets.mimi_dataset import MIMIDataset
     from moviad.utilities.configurations import Split
     from benchmark_common import make_feature_extractor
@@ -74,6 +93,7 @@ def build_loaders(config: dict, dataset_path: Path, snr: str, category: str, mac
         Split.TRAIN,
         transform=transform,
     )
+    train_dataset = training_subset(train_dataset, subset, seed)
     test_dataset = MIMIDataset(
         dataset_path.as_posix(),
         snr,
@@ -109,11 +129,12 @@ def run_one(
     machine_id: str,
     seed: int,
     debug: bool,
+    subset: float = 1.0,
 ) -> dict:
     device = resolve_device(config.get(f"{method}_device", config["device"]))
     set_seed(seed)
     train_dataset, test_dataset, train_loader, test_loader = build_loaders(
-        config, dataset_path, snr, category, machine_id, seed, method
+        config, dataset_path, snr, category, machine_id, seed, method, subset
     )
     if len(train_dataset) == 0 or len(test_dataset) == 0:
         raise RuntimeError(
@@ -182,7 +203,17 @@ def main() -> None:
                 for seed in seeds:
                     for machine_id in ids:
                         print(f"[MIMII] method={method} snr={snr} category={category} machine={machine_id} seed={seed}")
-                        row = run_one(method, config, dataset_path, snr, category, machine_id, int(seed), args.debug)
+                        row = run_one(
+                            method,
+                            config,
+                            dataset_path,
+                            snr,
+                            category,
+                            machine_id,
+                            int(seed),
+                            args.debug,
+                            args.subset,
+                        )
                         append_csv(result_path, row)
                         print(row)
 

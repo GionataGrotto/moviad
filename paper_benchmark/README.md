@@ -205,5 +205,6 @@ python paper_benchmark\report.py --results results\paper_benchmark
 - Se manca `clap_encoder.pth`, gli script con `pretrained: true` si fermano subito con un errore chiaro.
 - Se il PC non ha GPU, usa `device: "cpu"` o `device: "auto"`, ma il run completo sara' lento.
 - Se vuoi provare un solo modello, usa `--methods patchcore`, oppure `--methods padim`, ecc.
+- Per dimezzare il training set e ridurre la memoria usata da PatchCore e PaDiM, aggiungi `--subset`. Puoi anche indicare una frazione, per esempio `--subset 0.25`. Il test set resta completo.
 - Se vuoi ridurre il benchmark, modifica in config `categories`, `snrs`, `seeds` o `background_categories`.
 - I file `config.local.json`, CSV e report generati sono locali: di norma non serve committarli.

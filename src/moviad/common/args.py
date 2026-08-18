@@ -12,3 +12,4 @@ class Args:
     dataset_config: DatasetConfig = None
     dataset_type: DatasetType = None
     batch_size: int = 4
+    subset: float = 1.0
