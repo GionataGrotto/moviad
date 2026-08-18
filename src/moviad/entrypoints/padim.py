@@ -55,7 +55,7 @@ def train_padim(args: PadimArgs, logger=None) -> None:
         device=args.device,
         logger=logger,
     )
-    trainer.train()
+    trainer.train(streaming=args.streaming)
 
     evaluator = Evaluator(test_dataloader=test_dataloader, device=args.device)
 

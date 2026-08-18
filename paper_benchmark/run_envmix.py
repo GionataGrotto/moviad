@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="paper_benchmark/config.example.json")
     parser.add_argument("--debug", action="store_true", help="Run a tiny subset.")
     parser.add_argument("--methods", nargs="+", help="Override config methods.")
+    parser.add_argument("--streaming", action="store_true", help="Fit PatchCore/PaDiM with bounded-memory streaming updates.")
     parser.add_argument(
         "--subset",
         nargs="?",
@@ -195,6 +196,7 @@ def run_one(
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+    config["streaming"] = args.streaming or bool(config.get("streaming", False))
     methods = [method.lower() for method in (args.methods or config["methods"])]
     check_audio_checkpoint(config)
 

@@ -33,6 +33,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "epochs": 1,
     "memory_bank_size": 30000,
     "debug_max_batches": 2,
+    "streaming": False,
 }
 
 
@@ -187,7 +188,7 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
             device,
             force_cpu=bool(config.get("force_cpu_coreset", True)),
         )
-        trainer.train()
+        trainer.train(streaming=bool(config.get("streaming", False)))
         model.eval()
         return
 
@@ -195,7 +196,7 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
         from moviad.trainers.audio.trainer_padim import PadimTrainer
 
         trainer = PadimTrainer(model=model, device=device, save_path=None, data_path=None, class_name="benchmark")
-        trainer.train(train_iter)
+        trainer.train(train_iter, streaming=bool(config.get("streaming", False)))
         model.eval()
         return
 

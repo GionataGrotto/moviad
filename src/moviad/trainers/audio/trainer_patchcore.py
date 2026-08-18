@@ -37,10 +37,13 @@ class TrainerPatchCore:
         )
         self.force_cpu = force_cpu
 
-    def train(self):
+    def train(self, streaming: bool = False):
         """
         This method trains the PatchCore model and evaluate it at the end of training
         """
+
+        if streaming:
+            return self.train_streaming()
 
         embeddings = []
 
@@ -65,3 +68,38 @@ class TrainerPatchCore:
                 force_cpu=self.force_cpu,
             )
             self.patchore_model.memory_bank = embeddings[sampled_idxs]
+
+    def train_streaming(self):
+        """Fit PatchCore with bounded memory using reservoir sampling.
+
+        The feature extractor is still evaluated batch by batch, but all
+        embeddings are discarded after the batch. The resulting memory bank is
+        an unbiased sample of at most ``memory_bank_size`` embeddings.
+        """
+        reservoir = None
+        seen = 0
+        generator = torch.Generator(device="cpu").manual_seed(0)
+
+        with torch.no_grad():
+            print("Streaming embedding extraction:")
+            for batch in tqdm(iter(self.train_dataloader)):
+                inputs = batch[0] if isinstance(batch, tuple) else batch
+                embeddings = self.patchore_model(inputs.to(self.device)).detach().cpu()
+                for embedding in embeddings:
+                    seen += 1
+                    if reservoir is None:
+                        reservoir = torch.empty(
+                            (self.patchore_model.memory_bank_size, embedding.numel()),
+                            dtype=embedding.dtype,
+                        )
+                    if seen <= reservoir.shape[0]:
+                        reservoir[seen - 1].copy_(embedding.reshape(-1))
+                    else:
+                        replacement = int(torch.randint(seen, (1,), generator=generator))
+                        if replacement < reservoir.shape[0]:
+                            reservoir[replacement].copy_(embedding.reshape(-1))
+
+        if reservoir is None:
+            self.patchore_model.memory_bank = torch.empty(0)
+        else:
+            self.patchore_model.memory_bank = reservoir[: min(seen, reservoir.shape[0])]

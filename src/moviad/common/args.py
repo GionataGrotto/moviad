@@ -13,3 +13,4 @@ class Args:
     dataset_type: DatasetType = None
     batch_size: int = 4
     subset: float = 1.0
+    streaming: bool = False

@@ -55,7 +55,7 @@ def train_patchcore(args: PatchCoreArgs, logger=None) -> None:
     patchcore.to(args.device)
     patchcore.train()
     trainer = TrainerPatchCore(patchcore, train_dataloader, test_dataloader, args.device, logger=logger)
-    trainer.train()
+    trainer.train(streaming=args.streaming)
 
     # save the model
     if args.save_path:
