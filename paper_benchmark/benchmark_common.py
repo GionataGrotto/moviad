@@ -88,8 +88,15 @@ def limited(iterable: Iterable[Any], debug: bool, max_batches: int) -> Iterable[
 def append_csv(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not path.exists()
+    fieldnames = list(row.keys())
+    if not write_header:
+        # Keep one stable schema across methods. Different models expose
+        # different optional metrics, so using the current row's key order can
+        # shift values into the wrong columns when appending.
+        with path.open("r", newline="", encoding="utf-8") as fh:
+            fieldnames = next(csv.reader(fh), fieldnames)
     with path.open("a", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(row.keys()))
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
         if write_header:
             writer.writeheader()
         writer.writerow(row)

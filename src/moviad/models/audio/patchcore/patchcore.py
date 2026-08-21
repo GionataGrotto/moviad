@@ -173,7 +173,16 @@ class PatchCore(AudioVADModel):
                 patch_scores, image_size=self.input_size
             )
 
-            output = (anomaly_maps, pred_scores)
+            # Temporal localization score: for every time frame, average the
+            # five highest-frequency anomaly-map responses. CFA and STFPM use
+            # the same top-k pooling convention. PatchCore previously returned
+            # only (anomaly_maps, pred_scores), which made temporal metrics
+            # unavailable and caused downstream CSV columns to shift.
+            map_without_channel = anomaly_maps.squeeze(1)
+            top_k = min(5, map_without_channel.shape[2])
+            tmp_scores = map_without_channel.topk(top_k, dim=2).values.mean(dim=2)
+
+            output = (anomaly_maps, pred_scores, tmp_scores)
 
         return output
 
