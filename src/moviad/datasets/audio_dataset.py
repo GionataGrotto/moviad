@@ -609,11 +609,19 @@ class RetrofitTestDs(Dataset):
                 sample.anomaly_clip.unsqueeze(0)
             ).squeeze(0)
             anomaly_tmp_mask = torch.zeros(self.img_shape[1])
-            anomaly_tmp_mask[
-                sample.anomaly_start_idx
-                // self.wav_to_spectro.hop_length : sample.anomaly_end_idx
-                // self.wav_to_spectro.hop_length
-            ] = 1
+            # Match the temporal ground truth defined in the paper: inside
+            # the injected-anomaly interval, sum the log-spectrogram energy
+            # over frequencies and mark frames above its 50th percentile.
+            start = sample.anomaly_start_idx // self.wav_to_spectro.hop_length
+            end = sample.anomaly_end_idx // self.wav_to_spectro.hop_length
+            end = min(end, anomaly_mask.shape[-1], anomaly_tmp_mask.shape[0])
+            start = max(0, min(start, end))
+            if end > start:
+                anomaly_energy = anomaly_mask[..., start:end].sum(dim=-2)
+                threshold = torch.quantile(anomaly_energy, 0.5)
+                anomaly_tmp_mask[start:end] = (
+                    anomaly_energy > threshold
+                ).to(anomaly_tmp_mask.dtype)
         else:
             anomaly_mask = torch.zeros(self.img_shape)
             anomaly_tmp_mask = torch.zeros(self.img_shape[1])
