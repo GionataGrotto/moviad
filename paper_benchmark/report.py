@@ -53,8 +53,10 @@ def as_float(value: str):
     return None if math.isnan(number) else number
 
 
-def group_key(row: dict[str, str]) -> tuple[str, ...]:
+def group_key(row: dict[str, str], paper_aggregate: bool = False) -> tuple[str, ...]:
     dataset = row.get("dataset", "")
+    if paper_aggregate and dataset == "envmix":
+        return (dataset, row.get("method", ""))
     if dataset == "mimii":
         return (
             dataset,
@@ -72,10 +74,12 @@ def group_key(row: dict[str, str]) -> tuple[str, ...]:
     return (dataset, row.get("method", ""))
 
 
-def summarize(rows: list[dict[str, str]]) -> dict[tuple[str, ...], dict[str, str]]:
+def summarize(
+    rows: list[dict[str, str]], paper_aggregate: bool = False
+) -> dict[tuple[str, ...], dict[str, str]]:
     groups: dict[tuple[str, ...], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
-        groups[group_key(row)].append(row)
+        groups[group_key(row, paper_aggregate=paper_aggregate)].append(row)
 
     summary = {}
     for key, group in groups.items():
@@ -128,6 +132,7 @@ def main() -> None:
         return
 
     summary = summarize(rows)
+    paper_summary = summarize(rows, paper_aggregate=True)
     mimii_keys = sorted(key for key in summary if key[0] == "mimii")
     envmix_keys = sorted(key for key in summary if key[0] == "envmix")
 
@@ -141,6 +146,8 @@ def main() -> None:
     ]
     lines.extend(render_table("MIMII", mimii_keys, summary))
     lines.extend(render_table("EnvMix", envmix_keys, summary))
+    paper_envmix_keys = sorted(key for key in paper_summary if key[0] == "envmix")
+    lines.extend(render_table("EnvMix (paper aggregate)", paper_envmix_keys, paper_summary))
 
     report_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote report to {report_path}")

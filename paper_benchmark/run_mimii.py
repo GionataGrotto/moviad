@@ -93,6 +93,7 @@ def build_loaders(
         machine_id,
         Split.TRAIN,
         transform=transform,
+        seed=seed,
     )
     train_dataset = training_subset(train_dataset, subset, seed)
     test_dataset = MIMIDataset(
@@ -103,6 +104,7 @@ def build_loaders(
         Split.TEST,
         wave_to_spectro=feature_extractor.spectro_transform,
         transform=transform,
+        seed=seed,
     )
     generator = torch.Generator().manual_seed(seed)
     train_loader = DataLoader(

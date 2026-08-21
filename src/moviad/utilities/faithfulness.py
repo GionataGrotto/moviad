@@ -82,11 +82,10 @@ def compute_faithfulness(
     wav_to_spectro,
     device: torch.device,
 ) -> np.ndarray:
-    """FF v1: suppress the predicted anomaly regions and measure score drop."""
+    """FF v1: retain predicted anomaly regions and measure score change."""
     wav_to_spectro = wav_to_spectro.to(device)
     extractors, previous = _spectrogram_mode(model)
     scores, modified_scores = [], []
-    snr_scale = None if snr_db is None else 1 + 10 ** (float(snr_db) / 20)
     model.eval()
     try:
         for audio_clips, _, _ in tqdm(dataloader, desc="Faithfulness v1"):
@@ -94,9 +93,9 @@ def compute_faithfulness(
             with torch.no_grad():
                 anomaly_map, score = _predictions(model, spectrograms, device)
                 anomaly_map = _minmax_per_sample(anomaly_map)
-                if snr_scale is not None:
-                    anomaly_map = anomaly_map / snr_scale
-                modified = spectrograms * (1 - anomaly_map)
+                # FF v1 follows the paper: retain the regions selected by the
+                # anomaly map, then compare f(x) with f(x * M).
+                modified = spectrograms * anomaly_map
                 _, modified_score = _predictions(model, modified, device)
             scores.extend(score.cpu().numpy())
             modified_scores.extend(modified_score.cpu().numpy())
