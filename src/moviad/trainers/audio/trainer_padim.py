@@ -93,5 +93,9 @@ class PadimTrainer:
         covariance = covariance + 0.01 * torch.eye(covariance.shape[-1], dtype=covariance.dtype).unsqueeze(0)
         if self.model.diag_cov:
             covariance = torch.diag_embed(torch.diagonal(covariance, dim1=-2, dim2=-1))
-        self.model.gauss_mean = mean.float().transpose(0, 1).reshape(channels, height, width).numpy()
-        self.model.gauss_cov = covariance.float().permute(2, 1, 0).reshape(channels, channels, height * width).numpy()
+        # Padim.compute_distances expects one Gaussian per spatial patch:
+        # mean=(channels, patches), covariance=(channels, channels, patches).
+        # Do not reshape the mean to (channels, height, width): that creates
+        # the extra spatial dimension seen in the streaming inference error.
+        self.model.gauss_mean = mean.float().transpose(0, 1).numpy()
+        self.model.gauss_cov = covariance.float().permute(1, 2, 0).numpy()
