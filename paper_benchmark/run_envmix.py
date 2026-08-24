@@ -18,6 +18,7 @@ from benchmark_common import (
     limited,
     make_feature_extractor,
     make_model,
+    make_spectrogram_transform,
     output_dir,
     resolve_device,
     run_cli,
@@ -71,13 +72,17 @@ def build_loaders(
 
     device = resolve_device(config.get(f"{method}_device", config["device"]))
     envmix = config["envmix"]
-    feature_extractor = make_feature_extractor(config, device, frozen=True)
+    if method.lower() == "dinomaly":
+        wave_to_spectro = make_spectrogram_transform(config)
+    else:
+        feature_extractor = make_feature_extractor(config, device, frozen=True)
+        wave_to_spectro = feature_extractor.spectro_transform
     max_samples = envmix.get("max_samples_debug") if debug else None
 
     train_dataset, test_dataset, test_dataset_ff = generate_urban_esc_V1(
         urban_category=background_category,
         esc50_categories=envmix["esc50_anomaly_categories"],
-        wav_to_spectro=feature_extractor.spectro_transform,
+        wav_to_spectro=wave_to_spectro,
         SNR_dB=float(snr_db),
         path_urban=expand_path(envmix["urban_path"]),
         path_esc50=expand_path(envmix["esc50_path"]),
@@ -198,7 +203,7 @@ def main() -> None:
     config = load_config(args.config)
     config["streaming"] = args.streaming or bool(config.get("streaming", False))
     methods = [method.lower() for method in (args.methods or config["methods"])]
-    check_audio_checkpoint(config)
+    check_audio_checkpoint(config, methods)
 
     envmix = config["envmix"]
     urban_path = expand_path(envmix["urban_path"])

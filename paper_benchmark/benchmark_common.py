@@ -26,12 +26,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "backbone": "Cnn14",
     "layers": ["conv_block2", "conv_block3", "conv_block4"],
     "pretrained": True,
+    "dinomaly_encoder": "deit_tiny_patch16_224.fb_in1k",
+    "dinomaly_pretrained": True,
+    "dinomaly_image_size": [224, 224],
     "batch_size": 4,
     "num_workers": 0,
     "force_cpu_coreset": True,
     "methods": ["patchcore"],
     "epochs": 1,
     "memory_bank_size": 30000,
+    "cfa_gamma_c": 4,
+    "cfa_gamma_d": 1,
     "debug_max_batches": 2,
     "streaming": False,
 }
@@ -102,8 +107,15 @@ def append_csv(path: Path, row: dict[str, Any]) -> None:
         writer.writerow(row)
 
 
-def check_audio_checkpoint(config: dict[str, Any]) -> None:
+def check_audio_checkpoint(
+    config: dict[str, Any], methods: list[str] | None = None
+) -> None:
     if not config.get("pretrained", True):
+        return
+    audio_backbone_methods = {"patchcore", "padim", "cfa", "stfpm"}
+    if methods is not None and not audio_backbone_methods.intersection(
+        {method.lower() for method in methods}
+    ):
         return
     candidates = [
         PROJECT_ROOT / "moviad" / "weights" / "clap_encoder.pth",
@@ -127,6 +139,17 @@ def make_feature_extractor(config: dict[str, Any], device: torch.device, frozen:
         frozen=frozen,
         pre_trained=config.get("pretrained", True),
     )
+
+
+def make_spectrogram_transform(config: dict[str, Any]):
+    """Create the frozen log-mel frontend without loading Cnn14 weights."""
+    from moviad.utilities.audio.audio_feature_exctractor import AudioFeatureExtractor
+
+    _, _, spectrogram_transform = AudioFeatureExtractor._load_spectrogram_transform(
+        config.get("backbone", "Cnn14")
+    )
+    spectrogram_transform.eval()
+    return spectrogram_transform
 
 
 def make_model(
@@ -167,7 +190,13 @@ def make_model(
         from moviad.models.audio.cfa.cfa import CFA
 
         feature_extractor = make_feature_extractor(config, device, frozen=True)
-        return CFA(feature_extractor, config["backbone"], device).to(device)
+        return CFA(
+            feature_extractor,
+            config["backbone"],
+            device,
+            gamma_c=int(config.get("cfa_gamma_c", 4)),
+            gamma_d=int(config.get("cfa_gamma_d", 1)),
+        ).to(device)
 
     if method == "stfpm":
         from moviad.models.audio.stfpm.stfpm import STFPM
@@ -175,6 +204,26 @@ def make_model(
         teacher = make_feature_extractor(config, device, frozen=True)
         student = make_feature_extractor(config, device, frozen=False)
         return STFPM(teacher, student).to(device)
+
+    if method == "dinomaly":
+        from moviad.models.audio.dinomaly import AudioDinomaly
+
+        image_size = tuple(
+            int(value) for value in config.get("dinomaly_image_size", [224, 224])
+        )
+        if len(image_size) != 2 or min(image_size) <= 0:
+            raise ValueError(
+                "dinomaly_image_size must contain two positive integers."
+            )
+        return AudioDinomaly(
+            encoder_name=config.get(
+                "dinomaly_encoder", "deit_tiny_patch16_224.fb_in1k"
+            ),
+            device=device,
+            image_size=image_size,
+            pretrained=bool(config.get("dinomaly_pretrained", True)),
+            spectrogram_backbone=config.get("backbone", "Cnn14"),
+        ).to(device)
 
     raise ValueError(f"Unsupported method: {method}")
 
@@ -224,6 +273,23 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
         eval_iter = limited(test_loader, debug, max_batches)
         trainer = TrainerSTFPM(model, train_iter, eval_iter, wandb=False, device=str(device))
         trainer.train(int(config.get("epochs", 1)), ["f1_img", "img_roc_auc", "pr_auc_img"], None)
+        model.eval()
+        return
+
+    if method == "dinomaly":
+        from moviad.trainers.audio.trainer_dinomaly import TrainerDinomaly
+
+        trainer = TrainerDinomaly(
+            model,
+            train_loader,
+            device,
+            debug=debug,
+            max_batches=max_batches,
+        )
+        trainer.train(
+            epochs=int(config.get("epochs", 1)),
+            batch_size=int(config.get("batch_size", 1)),
+        )
         model.eval()
         return
 

@@ -58,8 +58,17 @@ class PadimTrainer:
 
         self.model.train()
         for x in tqdm(train_dataloader, "| streaming feature extraction | train | %s |" % self.class_name):
-            outputs = self.model(x.to(self.device))
-            layer_outputs = {layer: [output] for layer, output in outputs.items()}
+            batch = self.model.batch_input(x).to(self.device)
+            outputs = self.model(batch)
+            if not isinstance(outputs, dict):
+                raise TypeError(
+                    "PaDiM training must return a dict of layer feature lists, "
+                    f"got {type(outputs)!r}"
+                )
+            # PaDiM.forward already returns {layer: [tensor, ...]}.  Do not
+            # wrap each value again: raw_feature_maps_to_embeddings expects a
+            # flat list of tensors for every layer.
+            layer_outputs = outputs
             embeddings = self.model.raw_feature_maps_to_embeddings(layer_outputs)
             batch, channels, height, width = embeddings.shape
             values = embeddings.detach().cpu().double().permute(0, 2, 3, 1).reshape(batch, height * width, channels)
