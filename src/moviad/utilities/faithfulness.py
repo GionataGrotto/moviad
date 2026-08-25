@@ -57,9 +57,17 @@ def _normalise_scores(scores: Iterable[float], modified: Iterable[float]):
 def audio_spectro_transform(model):
     """Return the spectrogram transform belonging to an audio AD model."""
     extractors = _feature_extractors(model)
-    if not extractors:
-        raise ValueError("Could not find an AudioFeatureExtractor on the model.")
-    return extractors[0].spectro_transform
+    if extractors:
+        return extractors[0].spectro_transform
+
+    # AudioDinomaly owns its frontend directly instead of wrapping it in an
+    # AudioFeatureExtractor. During faithfulness the model receives the
+    # already-computed 4D spectrogram, which its audio adapter supports.
+    transform = getattr(model, "spectrogram_transform", None)
+    if callable(transform):
+        return transform
+
+    raise ValueError("Could not find an audio spectrogram transform on the model.")
 
 
 def _spectrogram_mode(model):

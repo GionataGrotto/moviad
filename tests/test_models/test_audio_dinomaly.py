@@ -17,6 +17,9 @@ def test_audio_dinomaly_waveform_contract_and_training_step():
             device="cpu",
             pretrained=False,
         )
+        from moviad.utilities.faithfulness import audio_spectro_transform
+
+        assert audio_spectro_transform(model) is model.spectrogram_transform
         waveform = torch.randn(1, 4096)
 
         model.eval()
