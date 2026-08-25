@@ -124,8 +124,11 @@ class AudioDinomaly(Dinomaly):
             align_corners=False,
         )
         anomaly_scores = anomaly_maps.flatten(start_dim=1).amax(dim=1)
-        top_k = min(5, anomaly_maps.shape[2])
-        temporal_scores = anomaly_maps.topk(top_k, dim=2).values.mean(dim=2)
+        # Audio spectrograms use (time, frequency) spatial axes. For the
+        # temporal metric, pool the five highest-frequency anomaly values and
+        # keep one score for every time frame.
+        top_k = min(5, anomaly_maps.shape[3])
+        temporal_scores = anomaly_maps.topk(top_k, dim=3).values.mean(dim=3)
         return anomaly_maps, anomaly_scores, temporal_scores
 
     def train_step(self, batch, training_args: DinomalyTrainArgs):
