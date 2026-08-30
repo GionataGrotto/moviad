@@ -20,6 +20,9 @@
   "cfa_gamma_c": 4,
   "cfa_gamma_d": 1,
   "debug_max_batches": 2,
+  "dcase2026": {
+    "dataset_path": "~/datasets/DCASE"
+  },
   "mimii": {
     "dataset_path": "~/datasets/mimii",
     "snrs": ["0_db", "6_db", "m6_db"],

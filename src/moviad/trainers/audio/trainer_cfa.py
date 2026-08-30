@@ -34,7 +34,11 @@ class TrainerCFA():
         self.eval_dataloader = eval_dataloader
         self.device = device
         self.wandb = wandb
-        self.evaluator = Evaluator(self.eval_dataloader, self.device)
+        self.evaluator = (
+            Evaluator(self.eval_dataloader, self.device)
+            if self.eval_dataloader is not None
+            else None
+        )
 
 
     def train(self, epochs: int, metrics_to_compute: list, binarizer):
@@ -88,7 +92,9 @@ class TrainerCFA():
                 loss.backward()
                 optimizer.step()
 
-            if binarizer:
+            if self.evaluator is None:
+                metrics = {}
+            elif binarizer:
                 metrics = self.evaluator.evaluate(
                     self.cfa_model, 
                     metrics_to_compute=metrics_to_compute,

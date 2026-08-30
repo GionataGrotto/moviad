@@ -228,7 +228,7 @@ def make_model(
     raise ValueError(f"Unsupported method: {method}")
 
 
-def fit_model(method: str, model, train_loader, test_loader, config: dict[str, Any], device: torch.device, debug: bool) -> None:
+def fit_model(method: str, model, train_loader, test_loader, config: dict[str, Any], device: torch.device, debug: bool, evaluate_during_training: bool = True) -> None:
     method = method.lower()
     max_batches = int(config.get("debug_max_batches", 2))
     train_iter = limited(train_loader, debug, max_batches)
@@ -261,18 +261,26 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
 
         model.initialize_memory_bank(train_iter)
         train_iter = limited(train_loader, debug, max_batches)
-        eval_iter = limited(test_loader, debug, max_batches)
+        eval_iter = limited(test_loader, debug, max_batches) if evaluate_during_training else None
         trainer = TrainerCFA(model, train_iter, eval_iter, wandb=False, device=str(device))
-        trainer.train(int(config.get("epochs", 1)), ["f1_img", "img_roc_auc", "pr_auc_img"], None)
+        trainer.train(
+            int(config.get("epochs", 1)),
+            ["f1_img", "img_roc_auc", "pr_auc_img"] if evaluate_during_training else [],
+            None,
+        )
         model.eval()
         return
 
     if method == "stfpm":
         from moviad.trainers.audio.trainer_stfpm import TrainerSTFPM
 
-        eval_iter = limited(test_loader, debug, max_batches)
+        eval_iter = limited(test_loader, debug, max_batches) if evaluate_during_training else None
         trainer = TrainerSTFPM(model, train_iter, eval_iter, wandb=False, device=str(device))
-        trainer.train(int(config.get("epochs", 1)), ["f1_img", "img_roc_auc", "pr_auc_img"], None)
+        trainer.train(
+            int(config.get("epochs", 1)),
+            ["f1_img", "img_roc_auc", "pr_auc_img"] if evaluate_during_training else [],
+            None,
+        )
         model.eval()
         return
 

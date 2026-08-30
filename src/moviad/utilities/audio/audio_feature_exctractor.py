@@ -171,7 +171,9 @@ class AudioFeatureExtractor:
         if pretrained:
             p = Path(__file__).resolve().parents[2] / "weights" / "clap_encoder.pth"
             assert p.exists(), f"AudioFeatureExtractor Cnn14 weights not found in path: {p}"
-            self.model.load_state_dict(torch.load(p, weights_only=False))
+            self.model.load_state_dict(
+                torch.load(p, map_location=self.device, weights_only=False)
+            )
 
     def _load_cnn14_finetuned(self):
 

@@ -58,5 +58,8 @@
     "snr_db": [6.0, 0.0, -6.0],
     "seeds": [0, 1, 2],
     "max_samples_debug": 20
+  },
+  "dcase2026": {
+    "dataset_path": "/home/manuel_barusco/datasets/DCASE"
   }
 }

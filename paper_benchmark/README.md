@@ -19,6 +19,7 @@ Modelli supportati:
 - `padim`
 - `cfa`
 - `stfpm`
+- `dinomaly`
 
 Metriche principali:
 
@@ -199,6 +200,46 @@ python paper_benchmark\run_mimii.py --config paper_benchmark\config.local.json -
 python paper_benchmark\run_envmix.py --config paper_benchmark\config.local.json --methods patchcore padim cfa stfpm
 python paper_benchmark\report.py --results results\paper_benchmark
 ```
+
+## 12. DCASE 2026 Task 2
+
+Il runner usa il solo canale 0 (microfono vicino), addestra un modello
+separato per macchina sui clip normali `train` e genera gli output compatibili
+con l'evaluator vendorizzato in `dcase2026_task2_evaluator`.
+
+Imposta il percorso in `paper_benchmark\config.local.json`:
+
+```json
+{
+  "dcase2026": {
+    "dataset_path": "C:/path/to/Datasets/DCASE"
+  }
+}
+```
+
+Poi esegui:
+
+```powershell
+python paper_benchmark\run_dcase2026_task2.py `
+  --config paper_benchmark\config.local.json `
+  --methods patchcore padim stfpm cfa dinomaly
+```
+
+Per un controllo rapido:
+
+```powershell
+python paper_benchmark\run_dcase2026_task2.py `
+  --methods patchcore --debug --epochs 1
+```
+
+`--dataset-path` resta disponibile come override temporaneo del valore nel
+config, ma non è obbligatorio.
+
+Gli score e le decisioni vengono scritti in
+`dcase2026_task2_evaluator\dev\teams\moviad\<method>`. Il risultato aggregato
+contiene `AUC (all)` (source+target), `AUC (source)` e `AUC (target)`.
+L'evaluator può essere eseguito dalla sua directory con
+`--ground_truth_root dev`.
 
 ## Note pratiche
 

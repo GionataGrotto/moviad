@@ -34,7 +34,11 @@ class TrainerSTFPM:
         self.test_dataloader = test_dataloder
         self.device = device
         self.wandb = wandb
-        self.evaluator = Evaluator(self.test_dataloader, self.device)
+        self.evaluator = (
+            Evaluator(self.test_dataloader, self.device)
+            if self.test_dataloader is not None
+            else None
+        )
 
 
     def _stfpm_loss(teacher_features, student_features):
@@ -97,7 +101,9 @@ class TrainerSTFPM:
                 loss.backward()
                 optimizer.step()
 
-            if binarizer:
+            if self.evaluator is None:
+                metrics = {}
+            elif binarizer:
                 metrics = self.evaluator.evaluate(
                     self.stfpm, 
                     metrics_to_compute=metrics_to_compute,
