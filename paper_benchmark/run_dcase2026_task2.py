@@ -86,7 +86,11 @@ def _score_model(model, loader, device, max_batches: int | None = None):
                 waveform, label, batch_paths = batch
             output = model(waveform.to(device))
             score = output[1] if isinstance(output, (tuple, list)) else output
-            scores.extend(score.detach().cpu().reshape(-1).tolist())
+            if isinstance(score, torch.Tensor):
+                score = score.detach().cpu().reshape(-1).tolist()
+            else:
+                score = np.asarray(score).reshape(-1).tolist()
+            scores.extend(score)
             if label is not None:
                 labels.extend(label.reshape(-1).tolist())
             if batch_paths is not None:
