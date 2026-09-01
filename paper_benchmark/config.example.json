@@ -26,7 +26,9 @@
   "padim_covariance_reg": 0.01,
   "padim_streaming": true,
   "dcase2026": {
-    "dataset_path": "~/datasets/DCASE"
+    "dataset_path": "~/datasets/DCASE",
+    "score_aggregation": "temporal_topk_mean",
+    "score_topk": 5
   },
   "mimii": {
     "dataset_path": "~/datasets/mimii",

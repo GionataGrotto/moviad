@@ -67,12 +67,79 @@ def parse_args() -> argparse.Namespace:
         help="Also write binary decisions using --decision-percentile.",
     )
     parser.add_argument("--decision-percentile", type=float, default=99.0)
+    parser.add_argument(
+        "--score-aggregation",
+        choices=("max", "mean", "temporal_topk_mean"),
+        default=None,
+        help="DCASE-only file score aggregation; defaults to dcase2026.score_aggregation.",
+    )
+    parser.add_argument(
+        "--score-topk",
+        type=int,
+        default=None,
+        help="Number of frequency bins for temporal_topk_mean (default: 5).",
+    )
     parser.add_argument("--no-pretrained", action="store_true", help="Use random audio features for pipeline smoke tests")
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args()
 
 
-def _score_model(model, loader, device, max_batches: int | None = None):
+def _aggregate_dcase_score(output, aggregation: str, top_k: int = 5) -> np.ndarray:
+    """Convert a model output into one continuous score per DCASE file.
+
+    ``temporal_topk_mean`` follows the paper's temporal pooling idea: for each
+    time position, average the top-k frequency responses and then average over
+    time.  This function is deliberately used only by the DCASE runner;
+    MIMII keeps its original evaluator/model score path.
+    """
+    if not isinstance(output, (tuple, list)):
+        if aggregation != "max":
+            raise ValueError("A score map is required for the selected aggregation")
+        score = output
+        if isinstance(score, torch.Tensor):
+            return score.detach().cpu().reshape(-1).numpy()
+        return np.asarray(score).reshape(-1)
+
+    if aggregation == "max":
+        score = output[1]
+        if isinstance(score, torch.Tensor):
+            return score.detach().cpu().reshape(-1).numpy()
+        return np.asarray(score).reshape(-1)
+
+    anomaly_map = output[0]
+    if isinstance(anomaly_map, torch.Tensor):
+        anomaly_map = anomaly_map.detach().cpu().numpy()
+    anomaly_map = np.asarray(anomaly_map, dtype=float)
+    if anomaly_map.ndim == 4:
+        # Models expose a singleton output channel.  If a future model emits
+        # multiple channels, average them before pooling.
+        anomaly_map = anomaly_map.mean(axis=1)
+    if anomaly_map.ndim != 3:
+        raise ValueError(
+            f"Expected an anomaly map with shape (batch,time,frequency), got {anomaly_map.shape}"
+        )
+
+    if aggregation == "mean":
+        return anomaly_map.mean(axis=(1, 2))
+    if aggregation == "temporal_topk_mean":
+        if top_k <= 0:
+            raise ValueError(f"score_topk must be positive, got {top_k}")
+        top_k = min(top_k, anomaly_map.shape[2])
+        top_frequency = np.partition(
+            anomaly_map, anomaly_map.shape[2] - top_k, axis=2
+        )[:, :, -top_k:]
+        return top_frequency.mean(axis=(1, 2))
+    raise ValueError(f"Unsupported DCASE score aggregation: {aggregation}")
+
+
+def _score_model(
+    model,
+    loader,
+    device,
+    max_batches: int | None = None,
+    aggregation: str = "temporal_topk_mean",
+    top_k: int = 5,
+):
     scores, labels, paths = [], [], []
     model.eval()
     with torch.no_grad():
@@ -90,11 +157,8 @@ def _score_model(model, loader, device, max_batches: int | None = None):
             else:
                 waveform, label, batch_paths = batch
             output = model(waveform.to(device))
-            score = output[1] if isinstance(output, (tuple, list)) else output
-            if isinstance(score, torch.Tensor):
-                score = score.detach().cpu().reshape(-1).tolist()
-            else:
-                score = np.asarray(score).reshape(-1).tolist()
+            score = _aggregate_dcase_score(output, aggregation, top_k)
+            score = score.tolist()
             scores.extend(score)
             if label is not None:
                 labels.extend(label.reshape(-1).tolist())
@@ -163,8 +227,21 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     )
 
     max_batches = int(config.get("debug_max_batches", 2)) if args.debug else None
-    train_scores, _, train_paths = _score_model(model, train_loader, device, max_batches)
-    test_scores, labels, test_paths = _score_model(model, test_loader, device, max_batches)
+    dcase_config = config.get("dcase2026", {})
+    aggregation = args.score_aggregation or dcase_config.get(
+        "score_aggregation", "temporal_topk_mean"
+    )
+    top_k = (
+        args.score_topk
+        if args.score_topk is not None
+        else int(dcase_config.get("score_topk", 5))
+    )
+    train_scores, _, train_paths = _score_model(
+        model, train_loader, device, max_batches, aggregation, top_k
+    )
+    test_scores, labels, test_paths = _score_model(
+        model, test_loader, device, max_batches, aggregation, top_k
+    )
     threshold = None
     decisions = None
     if args.write_decisions:
@@ -172,7 +249,7 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
         decisions = (test_scores >= threshold).astype(int)
     domains = np.asarray([0 if record.domain == "source" else 1 for record in test_ds.records])
     result = _metrics(test_scores, labels, domains) if len(np.unique(labels)) == 2 else {}
-    result.update({"method": method, "machine": machine, "threshold": threshold, "train_size": len(train_ds), "test_size": len(test_ds)})
+    result.update({"method": method, "machine": machine, "threshold": threshold, "train_size": len(train_ds), "test_size": len(test_ds), "score_aggregation": aggregation, "score_topk": top_k})
 
     team_dir = evaluator_root / "teams" / "moviad" / method
     _write_pairs(

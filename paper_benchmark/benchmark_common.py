@@ -44,6 +44,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "padim_covariance_reg": 0.01,
     "padim_streaming": True,
     "clap_checkpoint": None,
+    "dcase2026": {
+        "score_aggregation": "temporal_topk_mean",
+        "score_topk": 5,
+    },
 }
 
 

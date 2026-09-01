@@ -249,6 +249,20 @@ contiene `AUC (all)` (source+target), `AUC (source)` e `AUC (target)`.
 L'evaluator può essere eseguito dalla sua directory con
 `--ground_truth_root dev`.
 
+Per DCASE il file-level score usa di default la media temporale dei top-5
+valori in frequenza (`temporal_topk_mean`). L'opzione è indipendente da MIMII e
+può essere cambiata anche da riga di comando:
+
+```bash
+python paper_benchmark/run_dcase2026_task2.py \
+  --config paper_benchmark/config.local.json \
+  --methods padim \
+  --score-aggregation max
+```
+
+Sono disponibili `max`, `mean` e `temporal_topk_mean`; per quest'ultima si può
+impostare il numero di valori con `--score-topk`.
+
 Il runner salva gli score continui di training come `train_anomaly_score_*.csv` e
 non scrive decisioni binarie per default. Dopo aver scelto il percentile, rigenera
 le decisioni senza riaddestrare:

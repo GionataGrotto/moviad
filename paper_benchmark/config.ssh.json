@@ -65,6 +65,8 @@
     "max_samples_debug": 20
   },
   "dcase2026": {
-    "dataset_path": "/home/manuel_barusco/datasets/DCASE"
+    "dataset_path": "/home/manuel_barusco/datasets/DCASE",
+    "score_aggregation": "temporal_topk_mean",
+    "score_topk": 5
   }
 }
