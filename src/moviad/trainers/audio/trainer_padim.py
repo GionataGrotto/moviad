@@ -90,9 +90,16 @@ class PadimTrainer:
         if count == 0:
             raise RuntimeError("Cannot stream-train PaDiM on an empty dataset")
         covariance = m2 / max(count - 1, 1)
-        covariance = covariance + 0.01 * torch.eye(covariance.shape[-1], dtype=covariance.dtype).unsqueeze(0)
+        covariance = covariance + self.model.covariance_reg * torch.eye(
+            covariance.shape[-1], dtype=covariance.dtype
+        ).unsqueeze(0)
         if self.model.diag_cov:
-            covariance = torch.diag_embed(torch.diagonal(covariance, dim1=-2, dim2=-1))
+            # Store only one variance per channel and spatial position.
+            self.model.gauss_mean = mean.float().transpose(0, 1).numpy()
+            self.model.gauss_cov = torch.diagonal(
+                covariance, dim1=-2, dim2=-1
+            ).float().transpose(0, 1).numpy()
+            return
         # Padim.compute_distances expects one Gaussian per spatial patch:
         # mean=(channels, patches), covariance=(channels, channels, patches).
         # Do not reshape the mean to (channels, height, width): that creates

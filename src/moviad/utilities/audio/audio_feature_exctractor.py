@@ -27,7 +27,8 @@ class AudioFeatureExtractor:
         device: torch.device,
         frozen: bool = True,
         pre_trained: bool = True,
-        enable_spectrogram_transform: bool = True
+        enable_spectrogram_transform: bool = True,
+        checkpoint_path: str | Path | None = None,
     ):
         """ 
         Constructor
@@ -42,6 +43,7 @@ class AudioFeatureExtractor:
         self.layers_idx = layers_idx
         self.device = device
         self.spectrogram_transform_enabled = enable_spectrogram_transform
+        self.checkpoint_path = Path(checkpoint_path).expanduser() if checkpoint_path else None
 
         # check for backbone support
         if model_name not in SUPPORTED_BACKBONES:
@@ -51,7 +53,7 @@ class AudioFeatureExtractor:
 
         # load the model
         if model_name == "Cnn14":
-            self._load_cnn14(pre_trained)
+            self._load_cnn14(pre_trained, self.checkpoint_path)
         elif model_name == "Cnn14_finetuned":
             self._load_cnn14_finetuned()
 
@@ -151,7 +153,7 @@ class AudioFeatureExtractor:
         else:
             raise NotImplementedError(f"Model {model_name} not supported")
 
-    def _load_cnn14(self, pretrained=True):
+    def _load_cnn14(self, pretrained=True, checkpoint_path: Path | None = None):
 
         self.spectrogram_extractor, self.logmel_extractor, self.spectro_transform = (
             self._load_spectrogram_transform(self.model_name)
@@ -169,7 +171,7 @@ class AudioFeatureExtractor:
         )
 
         if pretrained:
-            p = Path(__file__).resolve().parents[2] / "weights" / "clap_encoder.pth"
+            p = checkpoint_path or (Path(__file__).resolve().parents[2] / "weights" / "clap_encoder.pth")
             assert p.exists(), f"AudioFeatureExtractor Cnn14 weights not found in path: {p}"
             self.model.load_state_dict(
                 torch.load(p, map_location=self.device, weights_only=False)

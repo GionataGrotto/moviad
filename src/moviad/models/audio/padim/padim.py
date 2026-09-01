@@ -4,7 +4,6 @@ from typing import Mapping, Union, Any, Dict, List, Tuple
 
 import numpy as np
 from scipy.ndimage import gaussian_filter
-from scipy.spatial.distance import mahalanobis
 
 import torch
 from torch import nn
@@ -66,6 +65,7 @@ class Padim(AudioVADModel):
         "gauss_mean",
         "gauss_cov",
         "diag_cov",
+        "covariance_reg",
         "layers_idxs",
     ]
 
@@ -78,6 +78,8 @@ class Padim(AudioVADModel):
         diag_cov=False,
         img_size=None,
         backbone_model=None,
+        embedding_dim=None,
+        covariance_reg=0.01,
     ):
         """
         Args:
@@ -94,13 +96,20 @@ class Padim(AudioVADModel):
         )
         self.class_name = class_name
         self.diag_cov = diag_cov
+        self.covariance_reg = float(covariance_reg)
         # feature extractor backbone model
         self.backbone_model_name = backbone_model_name
         self.layers_idxs = layers_idxs
         self.backbone_model = self.load_backbone(backbone_model)
         self.feature_extractor = self.backbone_model
         # dimensionality reduction: random projection
-        random_dims = torch.tensor(sample(range(0, self.t_d), self.d))
+        _, max_embedding_dim = EMBEDDING_SIZES[backbone_model_name][tuple(layers_idxs)]
+        self.d = int(max_embedding_dim if embedding_dim is None else embedding_dim)
+        if not 1 <= self.d <= self.t_d:
+            raise ValueError(
+                f"embedding_dim must be between 1 and {self.t_d}, got {self.d}"
+            )
+        random_dims = torch.tensor(sample(range(0, self.t_d), self.d), dtype=torch.long)
         self.random_dimensions = torch.nn.Parameter(random_dims, requires_grad=False)
         # training: learn the multivariate Gaussian distribution from the extracted features
         self.train_outputs = None  # list of mean and covariance matrix numpy arrays
@@ -201,19 +210,17 @@ class Padim(AudioVADModel):
         # 3. compute the distance matrix
         dist_list = self.compute_distances(embedding_vectors)
         # 4. upsample
-        score_map = (
-            F.interpolate(
-                dist_list.unsqueeze(1),
-                size=x.size(2) if self.img_size is None else self.img_size,
-                mode="bilinear",
-                align_corners=False,
-            )
-            .squeeze()
-            .numpy()
-        )
-        # 5. apply gaussian smoothing on the score map
-        for i in range(score_map.shape[0]):
-            score_map[i] = gaussian_filter(score_map[i], sigma=4)
+        score_map = F.interpolate(
+            dist_list.unsqueeze(1),
+            size=x.size(2) if self.img_size is None else self.img_size,
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(1).cpu().numpy()
+        if score_map.ndim == 2:
+            score_map = score_map[None, ...]
+        # 5. apply gaussian smoothing on the score map.  Smooth the batch in
+        # one call to avoid a Python loop over every test sample.
+        score_map = gaussian_filter(score_map, sigma=(0, 4, 4))
         # 6. the image anomaly score is the maximum score in the score map
         img_scores = score_map.reshape(score_map.shape[0], -1).max(axis=1)
 
@@ -231,24 +238,21 @@ class Padim(AudioVADModel):
         """
         B, C, H, W = embedding_vectors.size()
 
-        embedding_vectors = embedding_vectors.view(B, C, H * W)
-        mean = torch.mean(embedding_vectors.cpu(), dim=0).numpy()
-        cov = torch.zeros(C, C, H * W).numpy()
-        I = np.identity(C)
-        # for every "patch" in the feature map, compute the covariance across the batch
-        for i in range(H * W):
-            if self.diag_cov:
-                temp_cov = (
-                    np.cov(embedding_vectors[:, :, i].cpu().numpy(), rowvar=False)
-                    + 0.01 * I
-                )
-                temp_cov[~I.astype(bool)] = 0
-                cov[:, :, i] = temp_cov
-            else:
-                cov[:, :, i] = (
-                    np.cov(embedding_vectors[:, :, i].cpu().numpy(), rowvar=False)
-                    + 0.01 * I
-                )
+        embedding_vectors = embedding_vectors.view(B, C, H * W).float().cpu()
+        mean_t = embedding_vectors.mean(dim=0)
+        mean = mean_t.numpy()
+
+        if self.diag_cov:
+            # A diagonal Gaussian avoids H*W dense matrix inversions.  Keep
+            # only C variances per patch instead of C*C covariance entries.
+            cov = embedding_vectors.var(dim=0, unbiased=B > 1).numpy()
+            cov += self.covariance_reg
+        else:
+            centered = embedding_vectors - mean_t.unsqueeze(0)
+            denominator = max(B - 1, 1)
+            cov = torch.einsum("bcp,bdp->cdp", centered, centered).numpy()
+            cov /= denominator
+            cov += self.covariance_reg * np.eye(C, dtype=cov.dtype)[:, :, None]
         if update_params:
             self.gauss_mean, self.gauss_cov = mean, cov
         return mean, cov
@@ -275,9 +279,11 @@ class Padim(AudioVADModel):
         self.backbone = backbone_forward
 
         # save the true and random projection dimensions
-        self.t_d, self.d = EMBEDDING_SIZES[self.backbone_model_name][
+        self.t_d, default_d = EMBEDDING_SIZES[self.backbone_model_name][
             tuple(self.layers_idxs)
         ]
+        if not hasattr(self, "d"):
+            self.d = default_d
         return backbone_model
 
     def get_model_savepath(self, save_path):
@@ -297,7 +303,8 @@ class Padim(AudioVADModel):
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
         # load the hyperparameters
         for p in self.HYPERPARAMS:
-            setattr(self, p, state_dict[p])
+            if p in state_dict:
+                setattr(self, p, state_dict[p])
         # load the backbone models
         self.load_backbone(self.backbone_model)
         # remove the hyperparameters from the state dict
@@ -316,12 +323,19 @@ class Padim(AudioVADModel):
         ), "The model must be trained first."
 
         means = np.moveaxis(self.gauss_mean, 1, 0)  # (patch, channel)
-        covariances = np.moveaxis(self.gauss_cov, 2, 0)  # (patch, channel, channel)
-        covariance_inverses = np.linalg.inv(covariances)
         deltas = embeddings - means[None, :, :]
-        squared_distances = np.einsum(
-            "bpc,pcd,bpd->bp", deltas, covariance_inverses, deltas
-        )
+        if self.diag_cov or self.gauss_cov.ndim == 2:
+            variances = np.moveaxis(self.gauss_cov, 1, 0)
+            squared_distances = np.sum(
+                (deltas * deltas) / np.maximum(variances[None, :, :], 1e-12),
+                axis=2,
+            )
+        else:
+            covariances = np.moveaxis(self.gauss_cov, 2, 0)  # (patch, channel, channel)
+            covariance_inverses = np.linalg.inv(covariances)
+            squared_distances = np.einsum(
+                "bpc,pcd,bpd->bp", deltas, covariance_inverses, deltas
+            )
         distances = np.sqrt(np.maximum(squared_distances, 0.0))
         return torch.from_numpy(distances.reshape(batch_size, height, width))
 

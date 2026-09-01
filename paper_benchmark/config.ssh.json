@@ -5,6 +5,7 @@
   "backbone": "Cnn14",
   "layers": ["conv_block2", "conv_block3", "conv_block4"],
   "pretrained": true,
+  "clap_checkpoint": null,
   "batch_size": 1,
   "num_workers": 0,
   "force_cpu_coreset": true,
@@ -13,9 +14,13 @@
     "enabled": true,
     "v2_threshold": 0.5
   },
-  "epochs": 50,
+  "epochs": 30,
   "memory_bank_size": 30000,
   "debug_max_batches": 2,
+  "padim_diag_cov": true,
+  "padim_embedding_dim": 225,
+  "padim_covariance_reg": 0.01,
+  "padim_streaming": true,
   "mimii": {
     "dataset_path": "/home/manuel_barusco/datasets/mimii",
     "snrs": ["0_db", "6_db", "m6_db"],

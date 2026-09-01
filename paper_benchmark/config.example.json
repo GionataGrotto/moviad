@@ -4,6 +4,7 @@
   "backbone": "Cnn14",
   "layers": ["conv_block2", "conv_block3", "conv_block4"],
   "pretrained": true,
+  "clap_checkpoint": null,
   "dinomaly_encoder": "deit_tiny_patch16_224.fb_in1k",
   "dinomaly_pretrained": true,
   "dinomaly_image_size": [224, 224],
@@ -20,6 +21,10 @@
   "cfa_gamma_c": 4,
   "cfa_gamma_d": 1,
   "debug_max_batches": 2,
+  "padim_diag_cov": true,
+  "padim_embedding_dim": 225,
+  "padim_covariance_reg": 0.01,
+  "padim_streaming": true,
   "dcase2026": {
     "dataset_path": "~/datasets/DCASE"
   },

@@ -39,6 +39,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "cfa_gamma_d": 1,
     "debug_max_batches": 2,
     "streaming": False,
+    "padim_diag_cov": True,
+    "padim_embedding_dim": 225,
+    "padim_covariance_reg": 0.01,
+    "padim_streaming": True,
+    "clap_checkpoint": None,
 }
 
 
@@ -117,10 +122,16 @@ def check_audio_checkpoint(
         {method.lower() for method in methods}
     ):
         return
-    candidates = [
-        PROJECT_ROOT / "moviad" / "weights" / "clap_encoder.pth",
-        PROJECT_ROOT / "src" / "moviad" / "weights" / "clap_encoder.pth",
-    ]
+    configured = config.get("clap_checkpoint")
+    if configured:
+        # An explicit path must be authoritative.  Silently falling back to a
+        # different checkpoint makes experiments difficult to reproduce.
+        candidates = [expand_path(configured)]
+    else:
+        candidates = [
+            PROJECT_ROOT / "moviad" / "weights" / "clap_encoder.pth",
+            PROJECT_ROOT / "src" / "moviad" / "weights" / "clap_encoder.pth",
+        ]
     if not any(path.exists() for path in candidates):
         expected = " or ".join(str(path) for path in candidates)
         raise FileNotFoundError(
@@ -138,6 +149,7 @@ def make_feature_extractor(config: dict[str, Any], device: torch.device, frozen:
         device,
         frozen=frozen,
         pre_trained=config.get("pretrained", True),
+        checkpoint_path=config.get("clap_checkpoint"),
     )
 
 
@@ -180,9 +192,11 @@ def make_model(
             class_name=class_name,
             device=device,
             layers_idxs=config["layers"],
-            diag_cov=False,
+            diag_cov=bool(config.get("padim_diag_cov", True)),
             img_size=input_size,
             backbone_model=make_feature_extractor(config, device, frozen=True),
+            embedding_dim=int(config.get("padim_embedding_dim", 225)),
+            covariance_reg=float(config.get("padim_covariance_reg", 0.01)),
         )
         return model.to(device)
 
@@ -252,7 +266,12 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
         from moviad.trainers.audio.trainer_padim import PadimTrainer
 
         trainer = PadimTrainer(model=model, device=device, save_path=None, data_path=None, class_name="benchmark")
-        trainer.train(train_iter, streaming=bool(config.get("streaming", False)))
+        trainer.train(
+            train_iter,
+            streaming=bool(
+                config.get("padim_streaming", config.get("streaming", False))
+            ),
+        )
         model.eval()
         return
 

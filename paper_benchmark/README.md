@@ -47,10 +47,18 @@ ma non e' obbligatorio.
 
 ## 2. Aggiungere il checkpoint CLAP
 
-Per ottenere performance sensate devi usare il backbone pre-addestrato. Metti il checkpoint qui:
+Per ottenere performance sensate devi usare il backbone pre-addestrato. Puoi
+mettere il checkpoint qui:
 
 ```text
 src/moviad/weights/clap_encoder.pth
+```
+
+In alternativa, il checkpoint può restare fuori dalla repo e si può indicare il
+percorso nella configurazione, senza inserirlo nel repository:
+
+```json
+"clap_checkpoint": "C:/Users/ggion/Downloads/clap_encoder.pth"
 ```
 
 Se la cartella `weights` non esiste, creala:
@@ -260,6 +268,9 @@ generare le decisioni direttamente durante il runner.
 - Se il PC non ha GPU, usa `device: "cpu"` o `device: "auto"`, ma il run completo sara' lento.
 - Se vuoi provare un solo modello, usa `--methods patchcore`, oppure `--methods padim`, ecc.
 - Per dimezzare il training set e ridurre la memoria usata da PatchCore e PaDiM, aggiungi `--subset`. Puoi anche indicare una frazione, per esempio `--subset 0.25`. Il test set resta completo.
-- Per evitare di conservare tutte le feature durante il training, aggiungi `--streaming` insieme a `--methods patchcore padim`. PatchCore usa un reservoir bounded e PaDiM aggiorna media/covarianza online.
+- PaDiM usa già di default il training streaming; per PatchCore puoi aggiungere `--streaming` insieme a `--methods patchcore` per usare un reservoir bounded.
 - Se vuoi ridurre il benchmark, modifica in config `categories`, `snrs`, `seeds` o `background_categories`.
+- PaDiM usa di default covarianza diagonale e training streaming per ridurre il
+  costo CPU/RAM. Per riprodurre la variante precedente imposta
+  `padim_diag_cov: false` e `padim_streaming: false`.
 - I file `config.local.json`, CSV e report generati sono locali: di norma non serve committarli.
