@@ -241,6 +241,19 @@ contiene `AUC (all)` (source+target), `AUC (source)` e `AUC (target)`.
 L'evaluator può essere eseguito dalla sua directory con
 `--ground_truth_root dev`.
 
+Il runner salva gli score continui di training come `train_anomaly_score_*.csv` e
+non scrive decisioni binarie per default. Dopo aver scelto il percentile, rigenera
+le decisioni senza riaddestrare:
+
+```bash
+python paper_benchmark/recompute_dcase2026_decisions.py \
+  --percentile 95 \
+  --methods cfa dinomaly stfpm
+```
+
+`--write-decisions --decision-percentile 99` può essere usato solo se si vuole
+generare le decisioni direttamente durante il runner.
+
 ## Note pratiche
 
 - Se manca `clap_encoder.pth`, gli script con `pretrained: true` si fermano subito con un errore chiaro.

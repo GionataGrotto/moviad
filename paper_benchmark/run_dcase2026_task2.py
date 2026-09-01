@@ -61,6 +61,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--machines", nargs="+", default=None)
     parser.add_argument("--seed", type=int, default=13711)
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument(
+        "--write-decisions",
+        action="store_true",
+        help="Also write binary decisions using --decision-percentile.",
+    )
     parser.add_argument("--decision-percentile", type=float, default=99.0)
     parser.add_argument("--no-pretrained", action="store_true", help="Use random audio features for pipeline smoke tests")
     parser.add_argument("--debug", action="store_true")
@@ -95,6 +100,9 @@ def _score_model(model, loader, device, max_batches: int | None = None):
                 labels.extend(label.reshape(-1).tolist())
             if batch_paths is not None:
                 paths.extend(batch_paths)
+            else:
+                start = len(paths)
+                paths.extend(f"train_{start + index:06d}.wav" for index in range(len(score)))
     return np.asarray(scores, dtype=float), np.asarray(labels, dtype=int), paths
 
 
@@ -157,15 +165,24 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     max_batches = int(config.get("debug_max_batches", 2)) if args.debug else None
     train_scores, _, train_paths = _score_model(model, train_loader, device, max_batches)
     test_scores, labels, test_paths = _score_model(model, test_loader, device, max_batches)
-    threshold = float(np.percentile(train_scores, args.decision_percentile))
-    decisions = (test_scores >= threshold).astype(int)
+    threshold = None
+    decisions = None
+    if args.write_decisions:
+        threshold = float(np.percentile(train_scores, args.decision_percentile))
+        decisions = (test_scores >= threshold).astype(int)
     domains = np.asarray([0 if record.domain == "source" else 1 for record in test_ds.records])
     result = _metrics(test_scores, labels, domains) if len(np.unique(labels)) == 2 else {}
     result.update({"method": method, "machine": machine, "threshold": threshold, "train_size": len(train_ds), "test_size": len(test_ds)})
 
     team_dir = evaluator_root / "teams" / "moviad" / method
+    _write_pairs(
+        team_dir / f"train_anomaly_score_{machine}_section_00_train.csv",
+        train_paths,
+        train_scores,
+    )
     _write_pairs(team_dir / f"anomaly_score_{machine}_section_00_test.csv", test_paths, test_scores)
-    _write_pairs(team_dir / f"decision_result_{machine}_section_00_test.csv", test_paths, decisions)
+    if decisions is not None:
+        _write_pairs(team_dir / f"decision_result_{machine}_section_00_test.csv", test_paths, decisions)
     _write_dev_ground_truth(dataset_path, evaluator_root, machine)
     return result
 
