@@ -13,6 +13,34 @@ import torch.nn.functional as F
 from torch import nn
 from transformers import AutoModel, BatchEncoding
 
+
+def build_htsat_base():
+    """Build the official LAION HTSAT-base audio backbone.
+
+    The import is lazy so the existing Cnn14 path does not require the
+    optional LAION package.
+    """
+    try:
+        from laion_clap.clap_module.factory import _MODEL_CONFIGS
+        from laion_clap.clap_module.htsat import HTSAT_Swin_Transformer
+    except ImportError as exc:
+        raise ImportError(
+            "HTSAT support requires the 'laion-clap' package. Install the "
+            "project dependencies (uv sync) and retry."
+        ) from exc
+
+    from types import SimpleNamespace
+
+    cfg = _MODEL_CONFIGS["HTSAT-base"]
+    audio_cfg = SimpleNamespace(**cfg["audio_cfg"])
+    return HTSAT_Swin_Transformer(
+        embed_dim=128,
+        depths=[2, 2, 12, 2],
+        num_heads=[4, 8, 16, 32],
+        config=audio_cfg,
+        enable_fusion=False,
+    )
+
 def get_model_from_str(s, vs=("alpha", "beta", "t0", "N")):
     def get_var(s, key):
         tmp = s.split("_")

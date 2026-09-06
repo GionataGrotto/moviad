@@ -13,9 +13,9 @@ import torchvision
 from torchlibrosa.stft import Spectrogram
 from torchlibrosa.stft import LogmelFilterBank
 
-from moviad.backbones.clap.clap import AudioEncoder, Cnn14
+from moviad.backbones.clap.clap import AudioEncoder, Cnn14, build_htsat_base
 
-SUPPORTED_BACKBONES = ["Cnn14", "Cnn14_finetuned"]
+SUPPORTED_BACKBONES = ["Cnn14", "Cnn14_finetuned", "HTSAT-base"]
 
 
 class AudioFeatureExtractor:
@@ -56,6 +56,8 @@ class AudioFeatureExtractor:
             self._load_cnn14(pre_trained, self.checkpoint_path)
         elif model_name == "Cnn14_finetuned":
             self._load_cnn14_finetuned()
+        elif model_name == "HTSAT-base":
+            self._load_htsat_base(pre_trained, self.checkpoint_path)
 
         # attach hooks
         self.attach_hook()
@@ -150,6 +152,23 @@ class AudioFeatureExtractor:
             spectro_transform.win_length = win_length
             
             return spectrogram_extractor, logmel_extractor, spectro_transform
+        elif model_name == "HTSAT-base":
+            spectrogram_extractor = Spectrogram(
+                n_fft=1024, hop_length=480, win_length=1024,
+                window="hann", center=True, pad_mode="reflect",
+                freeze_parameters=True,
+            )
+            logmel_extractor = LogmelFilterBank(
+                sr=48000, n_fft=1024, n_mels=64, fmin=50, fmax=14000,
+                ref=1.0, amin=1e-10, top_db=None, freeze_parameters=True,
+            )
+            spectro_transform = torch.nn.Sequential(
+                copy.deepcopy(spectrogram_extractor),
+                copy.deepcopy(logmel_extractor),
+            )
+            spectro_transform.hop_length = 480
+            spectro_transform.win_length = 1024
+            return spectrogram_extractor, logmel_extractor, spectro_transform
         else:
             raise NotImplementedError(f"Model {model_name} not supported")
 
@@ -193,6 +212,29 @@ class AudioFeatureExtractor:
         assert p.exists(), f"AudioFeatureExtractor Cnn14 weights not found in path: {p}"
         self.model.load_state_dict(torch.load(p))
 
+    def _load_htsat_base(self, pretrained=True, checkpoint_path: Path | None = None):
+        self.spectrogram_extractor, self.logmel_extractor, self.spectro_transform = (
+            self._load_spectrogram_transform("HTSAT-base")
+        )
+        self.model = build_htsat_base()
+        if pretrained:
+            p = checkpoint_path or (Path(__file__).resolve().parents[2] / "weights" / "music_speech_audioset_epoch_15_esc_89.98.pt")
+            if not p.exists():
+                raise FileNotFoundError(f"HTSAT-base weights not found at {p}")
+            checkpoint = torch.load(p, map_location="cpu", weights_only=False)
+            state = checkpoint.get("state_dict", checkpoint)
+            audio_state = {
+                key.removeprefix("module.audio_branch."): value
+                for key, value in state.items()
+                if key.startswith("module.audio_branch.")
+            }
+            missing, unexpected = self.model.load_state_dict(audio_state, strict=False)
+            if unexpected or any(not key.startswith(("head", "tscam_conv")) for key in missing):
+                raise RuntimeError(
+                    f"Invalid HTSAT-base checkpoint: missing={missing[:5]}, "
+                    f"unexpected={unexpected[:5]}"
+                )
+
     def attach_hook(self, bootstrap_idx=0):
 
         def hook(module, input, output):
@@ -203,6 +245,21 @@ class AudioFeatureExtractor:
             for idx in self.layers_idx:
                 # example layers: ["conv_block2", "conv_block3", "conv_block4"]
                 getattr(self.model.base, idx).register_forward_hook(hook)
+
+        elif self.model_name == "HTSAT-base":
+            for idx in self.layers_idx:
+                layer_idx = int(idx) if str(idx).isdigit() else int(str(idx).split(".")[-1])
+                layer = self.model.layers[layer_idx]
+
+                def htsat_hook(module, input, output, layer_idx=layer_idx):
+                    tokens = output[0] if isinstance(output, tuple) else output
+                    # HTSAT has 64x64 patch tokens, halved at every stage.
+                    side = 64 // (2 ** layer_idx)
+                    self.features.append(
+                        tokens.transpose(1, 2).reshape(tokens.shape[0], tokens.shape[2], side, side)
+                    )
+
+                layer.register_forward_hook(htsat_hook)
 
         elif self.model_name == "Cnn14_finetuned":
 
@@ -227,7 +284,13 @@ class AudioFeatureExtractor:
 
         self.features = []
 
-        self.model(batch)
+        if self.model_name == "HTSAT-base":
+            x = batch.transpose(1, 3)
+            x = self.model.bn0(x).transpose(1, 3)
+            x = self.model.reshape_wav2img(x)
+            self.model.forward_features(x)
+        else:
+            self.model(batch)
         
         return self.features
     

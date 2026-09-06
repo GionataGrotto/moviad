@@ -1,0 +1,2 @@
+# Optional dependency for the official LAION HTSAT-base checkpoint.
+laion-clap>=1.1.7
