@@ -33,9 +33,9 @@ class AudioDinomaly(Dinomaly):
         if len(self.image_size) != 2 or min(self.image_size) <= 0:
             raise ValueError("image_size must contain two positive integers")
 
-        if spectrogram_backbone != "Cnn14":
+        if spectrogram_backbone not in {"Cnn14", "HTSAT-base"}:
             raise ValueError(
-                "AudioDinomaly currently supports the Cnn14 spectrogram frontend only."
+                "AudioDinomaly supports the Cnn14 and HTSAT-base spectrogram frontends."
             )
 
         _, _, self.spectrogram_transform = (
