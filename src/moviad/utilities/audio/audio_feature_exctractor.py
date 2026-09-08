@@ -5,6 +5,7 @@ Based on the model name and the layers indexes it will consider the correct laye
 """
 
 from __future__ import annotations
+from collections.abc import Mapping
 from pathlib import Path
 import copy
 
@@ -16,6 +17,42 @@ from torchlibrosa.stft import LogmelFilterBank
 from moviad.backbones.clap.clap import AudioEncoder, Cnn14, build_htsat_base
 
 SUPPORTED_BACKBONES = ["Cnn14", "Cnn14_finetuned", "HTSAT-base"]
+
+
+def _checkpoint_state_dict(checkpoint) -> dict[str, torch.Tensor]:
+    """Return encoder weights from a raw or training-style PyTorch checkpoint.
+
+    Historical Cnn14 weights in this project are stored directly as an
+    ``AudioEncoder.state_dict()``.  Other training scripts save metadata such
+    as the epoch and optimizer alongside the actual weights under
+    ``state_dict``.  Both forms must load identically in benchmark runners.
+    """
+    if not isinstance(checkpoint, Mapping):
+        raise TypeError(
+            "Expected a checkpoint mapping or state_dict, got "
+            f"{type(checkpoint).__name__}"
+        )
+
+    state = checkpoint
+    for key in ("state_dict", "model_state_dict"):
+        candidate = checkpoint.get(key)
+        if isinstance(candidate, Mapping):
+            state = candidate
+            break
+
+    if not state or not all(isinstance(key, str) for key in state):
+        raise ValueError("Checkpoint does not contain a valid string-keyed state_dict")
+
+    # DataParallel and several training wrappers prepend these prefixes.  Only
+    # remove a prefix when every key has it, preserving already-compatible
+    # state_dicts such as the existing ``clap_encoder.pth``.
+    normalized = dict(state)
+    for prefix in ("module.", "model.", "audio_encoder."):
+        if all(key.startswith(prefix) for key in normalized):
+            normalized = {
+                key.removeprefix(prefix): value for key, value in normalized.items()
+            }
+    return normalized
 
 
 class AudioFeatureExtractor:
@@ -192,9 +229,8 @@ class AudioFeatureExtractor:
         if pretrained:
             p = checkpoint_path or (Path(__file__).resolve().parents[2] / "weights" / "clap_encoder.pth")
             assert p.exists(), f"AudioFeatureExtractor Cnn14 weights not found in path: {p}"
-            self.model.load_state_dict(
-                torch.load(p, map_location=self.device, weights_only=False)
-            )
+            checkpoint = torch.load(p, map_location=self.device, weights_only=False)
+            self.model.load_state_dict(_checkpoint_state_dict(checkpoint))
 
     def _load_cnn14_finetuned(self):
 
