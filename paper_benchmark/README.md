@@ -47,6 +47,23 @@ ma non e' obbligatorio.
 
 ## 2. Aggiungere il checkpoint CLAP
 
+Per usare il backbone grande `HTSAT-base`, installa inoltre la dipendenza
+ufficiale LAION:
+
+```powershell
+uv pip install -r requirements-htsat.txt
+```
+
+Il checkpoint grande supportato dal loader è:
+
+```text
+src/moviad/weights/music_speech_audioset_epoch_15_esc_89.98.pt
+```
+
+Nel file di configurazione usa `backbone: "HTSAT-base"` e layer come
+`["0", "1", "2", "3"]`. Il checkpoint Cnn14 originale continua a funzionare
+con `backbone: "Cnn14"`.
+
 Per ottenere performance sensate devi usare il backbone pre-addestrato. Puoi
 mettere il checkpoint qui:
 
@@ -264,8 +281,10 @@ Sono disponibili `max`, `mean` e `temporal_topk_mean`; per quest'ultima si può
 impostare il numero di valori con `--score-topk`.
 
 Il runner salva gli score continui di training come `train_anomaly_score_*.csv` e
-non scrive decisioni binarie per default. Dopo aver scelto il percentile, rigenera
-le decisioni senza riaddestrare:
+gli score continui di test come `anomaly_score_*.csv`; non scrive decisioni
+binarie per default. Dopo aver scelto il percentile, rigenera le decisioni senza
+riaddestrare. Per il protocollo usato qui, la soglia viene calcolata direttamente
+sugli score del test, separatamente per metodo e macchina:
 
 ```bash
 python paper_benchmark/recompute_dcase2026_decisions.py \
@@ -273,8 +292,46 @@ python paper_benchmark/recompute_dcase2026_decisions.py \
   --methods cfa dinomaly stfpm
 ```
 
-`--write-decisions --decision-percentile 99` può essere usato solo se si vuole
-generare le decisioni direttamente durante il runner.
+`--write-decisions --decision-percentile 99` può essere usato per generare le
+decisioni direttamente durante il runner. Questa è una soglia calibrata sul test
+e produce metriche binarie ottimistiche; AUC e pAUC continuano invece a usare gli
+score continui.
+
+### DCASE 2026 self-supervised lontano -> vicino
+
+La pipeline self-supervised è separata dal runner DCASE standard. Pre-addestra
+un encoder per macchina usando soltanto i file normali source del canale 1
+(microfono lontano), quindi addestra il detector sui file normali source del
+canale 0 (microfono vicino):
+
+```bash
+CUDA_VISIBLE_DEVICES=2 uv run python paper_benchmark/run_dcase2026_task2_ssl.py \
+  --config paper_benchmark/config.dcase2026_ssl.example.json \
+  --methods padim patchcore stfpm cfa dinomaly \
+  --write-decisions
+```
+
+I checkpoint vengono riutilizzati tra PaDiM, PatchCore, STFPM e CFA. Dinomaly
+riceve un checkpoint SSL separato perché usa un encoder ViT incompatibile con il
+backbone audio. `--force-ssl-pretrain` forza il nuovo pretraining;
+`--skip-ssl-pretrain` richiede checkpoint già esistenti; `--ssl-only` esegue
+soltanto il pretraining. Per un controllo rapido usa `--debug --no-pretrained`.
+
+La configurazione di esempio è
+`paper_benchmark/config.dcase2026_ssl.example.json`. Il dataset può essere
+impostato nel file oppure sovrascritto con `--dataset-path`. Gli output destinati
+all'evaluator sono separati dalla pipeline standard e vengono scritti in
+`dcase2026_task2_evaluator/dev_ssl`. Per valutarli:
+
+```bash
+cd dcase2026_task2_evaluator
+uv run python dcase2026_task2_evaluator.py \
+  --ground_truth_root dev_ssl
+```
+
+Il runner salva inoltre il riepilogo in
+`results/paper_benchmark/dcase2026_task2_ssl_results.json`. La modalità di
+default è sempre far-to-near; target e test non entrano nel pretraining SSL.
 
 ## Note pratiche
 

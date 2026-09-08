@@ -1,7 +1,8 @@
 """Train/evaluate the existing audio AD models on DCASE 2026 Task 2 dev data.
 
 This script uses the near microphone (channel 0), trains one model per machine,
-and writes the two CSV files consumed by the vendored DCASE evaluator.
+and writes the continuous score CSVs consumed by the vendored DCASE evaluator.
+Decision CSVs are optional and can be generated with ``--write-decisions``.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ try:
         make_model,
         make_spectrogram_transform,
         output_dir,
+        percentile_decisions,
         resolve_device,
         run_cli,
         set_seed,
@@ -39,6 +41,7 @@ except ImportError:  # supports ``python paper_benchmark/run_*.py``
         make_model,
         make_spectrogram_transform,
         output_dir,
+        percentile_decisions,
         resolve_device,
         run_cli,
         set_seed,
@@ -64,9 +67,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--write-decisions",
         action="store_true",
-        help="Also write binary decisions using --decision-percentile.",
+        help="Also write binary decisions using a percentile of the test scores.",
     )
-    parser.add_argument("--decision-percentile", type=float, default=99.0)
+    parser.add_argument(
+        "--decision-percentile",
+        type=float,
+        default=99.0,
+        help="Percentile of the test scores used for binary decisions (default: 99).",
+    )
     parser.add_argument(
         "--score-aggregation",
         choices=("max", "mean", "temporal_topk_mean"),
@@ -245,11 +253,21 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     threshold = None
     decisions = None
     if args.write_decisions:
-        threshold = float(np.percentile(train_scores, args.decision_percentile))
-        decisions = (test_scores >= threshold).astype(int)
+        threshold, decisions = percentile_decisions(
+            test_scores, args.decision_percentile
+        )
     domains = np.asarray([0 if record.domain == "source" else 1 for record in test_ds.records])
     result = _metrics(test_scores, labels, domains) if len(np.unique(labels)) == 2 else {}
-    result.update({"method": method, "machine": machine, "threshold": threshold, "train_size": len(train_ds), "test_size": len(test_ds), "score_aggregation": aggregation, "score_topk": top_k})
+    result.update({
+        "method": method,
+        "machine": machine,
+        "threshold": threshold,
+        "threshold_source": "test" if threshold is not None else None,
+        "train_size": len(train_ds),
+        "test_size": len(test_ds),
+        "score_aggregation": aggregation,
+        "score_topk": top_k,
+    })
 
     team_dir = evaluator_root / "teams" / "moviad" / method
     _write_pairs(

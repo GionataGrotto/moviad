@@ -1,0 +1,43 @@
+{
+  "device": "auto",
+  "output_dir": "results/paper_benchmark",
+  "backbone": "Cnn14",
+  "layers": ["conv_block2", "conv_block3", "conv_block4"],
+  "pretrained": true,
+  "clap_checkpoint": null,
+  "dinomaly_encoder": "deit_tiny_patch16_224.fb_in1k",
+  "dinomaly_pretrained": true,
+  "dinomaly_image_size": [224, 224],
+  "batch_size": 4,
+  "num_workers": 0,
+  "force_cpu_coreset": true,
+  "streaming": true,
+  "methods": ["patchcore", "padim", "cfa", "stfpm", "dinomaly"],
+  "epochs": 30,
+  "memory_bank_size": 30000,
+  "debug_max_batches": 2,
+  "padim_diag_cov": true,
+  "padim_embedding_dim": 225,
+  "padim_covariance_reg": 0.01,
+  "padim_streaming": true,
+  "dcase2026": {
+    "dataset_path": "~/datasets/DCASE",
+    "score_aggregation": "temporal_topk_mean",
+    "score_topk": 5
+  },
+  "dcase2026_ssl": {
+    "device": "auto",
+    "pretrain_channel": 1,
+    "detector_channel": 0,
+    "epochs": 10,
+    "batch_size": 2,
+    "learning_rate": 0.0001,
+    "temperature": 0.1,
+    "projection_dim": 128,
+    "noise_std": 0.02,
+    "gain_min": 0.8,
+    "gain_max": 1.2,
+    "time_mask_fraction": 0.1,
+    "checkpoint_dir": "results/paper_benchmark/dcase2026_ssl/checkpoints"
+  }
+}

@@ -95,6 +95,29 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def percentile_decisions(
+    scores: Iterable[float], percentile: float
+) -> tuple[float, np.ndarray]:
+    """Binarize scores using a percentile computed on the same score set.
+
+    DCASE decisions are intentionally test-calibrated for the requested
+    evaluation protocol.  The resulting threshold must therefore not be
+    interpreted as an independent validation threshold.
+    """
+    score_array = np.asarray(list(scores), dtype=float)
+    if score_array.size == 0:
+        raise ValueError("Cannot calculate a percentile threshold from empty scores")
+    if not np.all(np.isfinite(score_array)):
+        raise ValueError(
+            "Cannot calculate a percentile threshold from non-finite scores"
+        )
+    if not 0.0 < percentile < 100.0:
+        raise ValueError("percentile must be between 0 and 100")
+    threshold = float(np.percentile(score_array, percentile))
+    decisions = (score_array >= threshold).astype(int)
+    return threshold, decisions
+
+
 def limited(iterable: Iterable[Any], debug: bool, max_batches: int) -> Iterable[Any]:
     return islice(iterable, max_batches) if debug else iterable
 
@@ -132,10 +155,16 @@ def check_audio_checkpoint(
         # different checkpoint makes experiments difficult to reproduce.
         candidates = [expand_path(configured)]
     else:
-        candidates = [
-            PROJECT_ROOT / "moviad" / "weights" / "clap_encoder.pth",
-            PROJECT_ROOT / "src" / "moviad" / "weights" / "clap_encoder.pth",
-        ]
+        if config.get("backbone", "Cnn14") == "HTSAT-base":
+            candidates = [
+                PROJECT_ROOT / "moviad" / "weights" / "music_speech_audioset_epoch_15_esc_89.98.pt",
+                PROJECT_ROOT / "src" / "moviad" / "weights" / "music_speech_audioset_epoch_15_esc_89.98.pt",
+            ]
+        else:
+            candidates = [
+                PROJECT_ROOT / "moviad" / "weights" / "clap_encoder.pth",
+                PROJECT_ROOT / "src" / "moviad" / "weights" / "clap_encoder.pth",
+            ]
     if not any(path.exists() for path in candidates):
         expected = " or ".join(str(path) for path in candidates)
         raise FileNotFoundError(

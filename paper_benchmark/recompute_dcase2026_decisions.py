@@ -1,4 +1,4 @@
-"""Regenerate DCASE decision CSVs from saved train/test anomaly scores."""
+"""Regenerate DCASE decision CSVs from saved test anomaly scores."""
 
 from __future__ import annotations
 
@@ -7,6 +7,11 @@ import csv
 from pathlib import Path
 
 import numpy as np
+
+try:
+    from .benchmark_common import percentile_decisions
+except ImportError:  # supports ``python paper_benchmark/recompute_*.py``
+    from benchmark_common import percentile_decisions
 
 
 def _read_pairs(path: Path) -> tuple[list[str], np.ndarray]:
@@ -37,20 +42,17 @@ def main() -> None:
         methods = [p for p in methods if p.name.lower() in selected]
 
     for method_dir in methods:
-        train_files = sorted(method_dir.glob("train_anomaly_score_*_section_00_train.csv"))
-        for train_path in train_files:
-            stem = train_path.name.removeprefix("train_anomaly_score_").removesuffix("_section_00_train.csv")
-            test_path = method_dir / f"anomaly_score_{stem}_section_00_test.csv"
-            if not test_path.exists():
-                print(f"Skipping {method_dir.name}/{stem}: test scores are missing")
-                continue
-            _, train_scores = _read_pairs(train_path)
+        test_files = sorted(method_dir.glob("anomaly_score_*_section_00_test.csv"))
+        for test_path in test_files:
+            stem = test_path.name.removeprefix("anomaly_score_").removesuffix("_section_00_test.csv")
             test_names, test_scores = _read_pairs(test_path)
-            threshold = float(np.percentile(train_scores, args.percentile))
-            decisions = (test_scores >= threshold).astype(int)
+            threshold, decisions = percentile_decisions(test_scores, args.percentile)
             decision_path = method_dir / f"decision_result_{stem}_section_00_test.csv"
             _write_pairs(decision_path, test_names, decisions)
-            print(f"{method_dir.name}/{stem}: percentile={args.percentile:g}, threshold={threshold:.8g}")
+            print(
+                f"{method_dir.name}/{stem}: test_percentile={args.percentile:g}, "
+                f"threshold={threshold:.8g}"
+            )
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from paper_benchmark.run_dcase2026_task2 import (
     _aggregate_dcase_score,
     _write_pairs,
 )
+from paper_benchmark.benchmark_common import percentile_decisions
 
 
 def test_dcase_output_is_headerless_and_sorted(tmp_path):
@@ -31,3 +32,11 @@ def test_dcase_max_aggregation_remains_available():
         (torch.zeros(2, 1, 2, 2), torch.tensor([0.25, 0.75])), "max"
     )
     np.testing.assert_allclose(scores, [0.25, 0.75])
+
+
+def test_dcase_decisions_use_the_test_score_percentile():
+    threshold, decisions = percentile_decisions(
+        np.array([1.0, 2.0, 3.0, 4.0]), 75.0
+    )
+    assert threshold == 3.25
+    np.testing.assert_array_equal(decisions, [0, 0, 0, 1])
