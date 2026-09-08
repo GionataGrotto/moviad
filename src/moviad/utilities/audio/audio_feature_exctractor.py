@@ -47,11 +47,24 @@ def _checkpoint_state_dict(checkpoint) -> dict[str, torch.Tensor]:
     # remove a prefix when every key has it, preserving already-compatible
     # state_dicts such as the existing ``clap_encoder.pth``.
     normalized = dict(state)
-    for prefix in ("module.", "model.", "audio_encoder."):
+    for prefix in ("module.", "model."):
         if all(key.startswith(prefix) for key in normalized):
             normalized = {
                 key.removeprefix(prefix): value for key, value in normalized.items()
             }
+
+    # Official/full CLAP checkpoints include text encoders and CLAP projection
+    # layers in addition to the audio network.  AudioEncoder only needs the
+    # Cnn14 branch, which is commonly named ``audio_branch`` in those files.
+    for prefix in ("audio_branch.", "audio_encoder."):
+        audio_weights = {
+            key.removeprefix(prefix): value
+            for key, value in normalized.items()
+            if key.startswith(prefix)
+        }
+        if audio_weights:
+            normalized = audio_weights
+            break
     return normalized
 
 

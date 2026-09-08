@@ -25,3 +25,16 @@ def test_checkpoint_state_dict_accepts_model_state_dict_format():
     weights = {"audio_encoder.base.conv.weight": torch.ones(1)}
     extracted = _checkpoint_state_dict({"model_state_dict": weights})
     assert list(extracted) == ["base.conv.weight"]
+
+
+def test_checkpoint_state_dict_extracts_audio_branch_from_full_clap_checkpoint():
+    checkpoint = {
+        "state_dict": {
+            "audio_branch.base.conv.weight": torch.ones(1),
+            "audio_branch.projection.linear1.weight": torch.ones(1),
+            "text_branch.encoder.layer.0.weight": torch.ones(1),
+            "audio_projection.0.weight": torch.ones(1),
+        }
+    }
+    extracted = _checkpoint_state_dict(checkpoint)
+    assert list(extracted) == ["base.conv.weight", "projection.linear1.weight"]
