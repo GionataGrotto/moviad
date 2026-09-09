@@ -20,6 +20,7 @@ Modelli supportati:
 - `cfa`
 - `stfpm`
 - `dinomaly`
+- `draem`
 
 Metriche principali:
 
@@ -247,7 +248,7 @@ Poi esegui:
 ```powershell
 python paper_benchmark\run_dcase2026_task2.py `
   --config paper_benchmark\config.local.json `
-  --methods patchcore padim stfpm cfa dinomaly
+  --methods patchcore padim stfpm cfa dinomaly draem
 ```
 
 Per un controllo rapido:
@@ -307,7 +308,7 @@ canale 0 (microfono vicino):
 ```bash
 CUDA_VISIBLE_DEVICES=2 uv run python paper_benchmark/run_dcase2026_task2_ssl.py \
   --config paper_benchmark/config.dcase2026_ssl.example.json \
-  --methods padim patchcore stfpm cfa dinomaly \
+  --methods padim patchcore stfpm cfa dinomaly draem \
   --write-decisions
 ```
 

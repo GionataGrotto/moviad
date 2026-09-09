@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 from moviad.models.audio.audio_vad_model import AudioVADModel
 from moviad.models.audio.components.cfa.descriptor import Descriptor
 from moviad.models.training_args import TrainingArgs
-from moviad.utilities.audio.audio_feature_exctractor import AudioFeatureExtractor
+from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 from moviad.utilities.get_sizes import *
 
 class CFA(AudioVADModel):

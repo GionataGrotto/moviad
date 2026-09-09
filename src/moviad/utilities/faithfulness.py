@@ -60,9 +60,10 @@ def audio_spectro_transform(model):
     if extractors:
         return extractors[0].spectro_transform
 
-    # AudioDinomaly owns its frontend directly instead of wrapping it in an
-    # AudioFeatureExtractor. During faithfulness the model receives the
-    # already-computed 4D spectrogram, which its audio adapter supports.
+    # Spectrogram-only adapters (AudioDinomaly, AudioDRAEM) own their frontend
+    # directly instead of wrapping it in an AudioFeatureExtractor. During
+    # faithfulness the model receives the already-computed 4D spectrogram,
+    # which those audio adapters support.
     transform = getattr(model, "spectrogram_transform", None)
     if callable(transform):
         return transform

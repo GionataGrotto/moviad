@@ -13,6 +13,9 @@
   "dinomaly_encoder": "deit_tiny_patch16_224.fb_in1k",
   "dinomaly_pretrained": true,
   "dinomaly_image_size": [224, 224],
+  "draem_image_size": [256, 256],
+  "draem_anomaly_source_path": null,
+  "draem_learning_rate": 0.0001,
   "faithfulness": {
     "enabled": true,
     "v2_threshold": 0.5

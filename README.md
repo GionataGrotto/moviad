@@ -46,6 +46,7 @@ For every main script all its parameters are documented.
 - GANomaly: [paper](https://arxiv.org/abs/1805.06725)
 - SuperSimpleNet: [paper](https://arxiv.org/abs/2408.03143)
 - RD4AD: [paper](https://arxiv.org/abs/2201.10703)
+- DRAEM: [paper](https://arxiv.org/abs/2108.07610), [code](https://github.com/VitjanZ/DRAEM)
 
 **Feature Extraction Backbones**
 

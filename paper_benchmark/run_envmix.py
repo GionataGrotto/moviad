@@ -16,9 +16,8 @@ from benchmark_common import (
     fit_model,
     load_config,
     limited,
-    make_feature_extractor,
     make_model,
-    make_spectrogram_transform,
+    make_wave_to_spectrogram,
     output_dir,
     resolve_device,
     run_cli,
@@ -72,11 +71,7 @@ def build_loaders(
 
     device = resolve_device(config.get(f"{method}_device", config["device"]))
     envmix = config["envmix"]
-    if method.lower() == "dinomaly":
-        wave_to_spectro = make_spectrogram_transform(config)
-    else:
-        feature_extractor = make_feature_extractor(config, device, frozen=True)
-        wave_to_spectro = feature_extractor.spectro_transform
+    wave_to_spectro = make_wave_to_spectrogram(config, device, method)
     max_samples = envmix.get("max_samples_debug") if debug else None
 
     train_dataset, test_dataset, test_dataset_ff = generate_urban_esc_V1(

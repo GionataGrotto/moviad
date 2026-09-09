@@ -47,7 +47,9 @@ def test_audio_patchcore_train_epoch_smoke():
     assert model.memory_bank.ndim == 2
 
     model.eval()
-    anomaly_maps, anomaly_scores = model(torch.randn(2, 16000))
+    # Audio models return the temporal localization score as third output.
+    anomaly_maps, anomaly_scores, temporal_scores = model(torch.randn(2, 16000))
 
     assert anomaly_maps.shape == (2, 1, 8, 8)
     assert anomaly_scores.shape == (2,)
+    assert temporal_scores.shape == (2, 8)

@@ -6,7 +6,7 @@ from tqdm import tqdm
 import wandb
 
 from moviad.models.audio.cfa.cfa import CFA
-from moviad.utilities.audio.audio_feature_exctractor import AudioFeatureExtractor
+from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 from moviad.utilities.evaluator import Evaluator
 
 class TrainerCFA():

@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from moviad.models.audio.audio_vad_model import AudioVADModel
 from moviad.models.training_args import TrainingArgs
-from moviad.utilities.audio.audio_feature_exctractor import AudioFeatureExtractor
+from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 
 
 # Dict: "backbone_model_name" -> {(layer_idxs): (true_dimension, random_projection_dimension)}
@@ -107,7 +107,7 @@ class Padim(AudioVADModel):
         self.backbone_model = self.load_backbone(backbone_model)
         self.feature_extractor = self.backbone_model
         # dimensionality reduction: random projection
-        _, max_embedding_dim = EMBEDDING_SIZES[backbone_model_name][tuple(layers_idxs)]
+        _, max_embedding_dim = self.lookup_embedding_size(backbone_model_name, layers_idxs)
         self.d = int(max_embedding_dim if embedding_dim is None else embedding_dim)
         if not 1 <= self.d <= self.t_d:
             raise ValueError(
@@ -147,18 +147,23 @@ class Padim(AudioVADModel):
 
     @staticmethod
     def embedding_concat(x, y):
-        B, C1, H1, W1 = x.size()
-        _, C2, H2, W2 = y.size()
-        s = int(H1 / H2)
-        x = F.unfold(x, kernel_size=s, dilation=1, stride=s)
-        x = x.view(B, C1, -1, H2, W2)
-        z = torch.zeros(B, C1 + C2, x.size(2), H2, W2)
-        for i in range(x.size(2)):
-            z[:, :, i, :, :] = torch.cat((x[:, :, i, :, :], y), 1)
-        z = z.view(B, -1, H2 * W2)
-        z = F.fold(z, kernel_size=s, output_size=(H1, W1), stride=s)
+        """Concatenate two feature maps, replicating ``y`` over ``x``'s grid.
 
-        return z
+        The previous unfold/fold implementation assumed ``H1`` to be an exact
+        multiple of ``H2``. Audio feature maps do not satisfy that: the time
+        axis follows the clip length, so ratios such as 69/34 occur regularly
+        and left the trailing time frames of the output filled with zeros.
+        Nearest-neighbour upsampling replicates every low resolution patch over
+        its block exactly like the fold did, and is bit-identical to the old
+        code whenever the ratio is an exact integer, while also covering the
+        remainder rows.
+        """
+        if x.shape[0] != y.shape[0]:
+            raise ValueError(
+                f"Batch size mismatch between feature maps: {x.shape[0]} and {y.shape[0]}"
+            )
+        y = F.interpolate(y, size=x.shape[-2:], mode="nearest")
+        return torch.cat((x, y), dim=1)
 
     def raw_feature_maps_to_embeddings(
         self, layer_outputs: Dict[str, List[torch.Tensor]]
@@ -173,9 +178,18 @@ class Padim(AudioVADModel):
         - H, W = height and width of the feature maps
         """
         # concatenate the outputs of the different dataloader batches
-        output_tensors: dict[str, torch.Tensor] = {
-            layer: torch.cat(outputs, 0) for layer, outputs in layer_outputs.items()
-        }
+        try:
+            output_tensors: dict[str, torch.Tensor] = {
+                layer: torch.cat(outputs, 0) for layer, outputs in layer_outputs.items()
+            }
+        except RuntimeError as error:
+            raise RuntimeError(
+                "PaDiM could not stack the extracted feature maps. This happens "
+                "when the training clips do not all have the same duration: PaDiM "
+                "fits one Gaussian per time-frequency patch, so every clip must "
+                "produce a feature map of the same size. Crop or pad the clips to "
+                "a fixed duration before training."
+            ) from error
         # concatenate the feature maps to get the raw embedding vectors
         embedding_vectors: torch.Tensor = output_tensors[self.layers_idxs[0]]
         for layer in self.layers_idxs[1:]:
@@ -213,10 +227,13 @@ class Padim(AudioVADModel):
         embedding_vectors = self.raw_feature_maps_to_embeddings(layer_outputs)
         # 3. compute the distance matrix
         dist_list = self.compute_distances(embedding_vectors)
-        # 4. upsample
+        # 4. upsample to the spectrogram resolution.  ``x`` is a waveform of
+        # shape [B, samples] on the benchmark loaders, so its spatial size
+        # cannot be read off dimension 2 the way the visual PaDiM does.
+        output_size = self.resolve_output_size(x, dist_list)
         score_map = F.interpolate(
             dist_list.unsqueeze(1),
-            size=x.size(2) if self.img_size is None else self.img_size,
+            size=output_size,
             mode="bilinear",
             align_corners=False,
         ).squeeze(1).cpu().numpy()
@@ -225,13 +242,26 @@ class Padim(AudioVADModel):
         # 5. apply gaussian smoothing on the score map.  Smooth the batch in
         # one call to avoid a Python loop over every test sample.
         score_map = gaussian_filter(score_map, sigma=(0, 4, 4))
-        # 6. the image anomaly score is the maximum score in the score map
-        img_scores = score_map.reshape(score_map.shape[0], -1).max(axis=1)
 
-        # need to unsqueeze to have (batch, 1, H, W), where 1 is the single channel
-        # that represents the anomaly score for each pixel
-        score_map = np.expand_dims(score_map, axis=1)
-        return score_map, img_scores
+        # 6. follow the audio contract shared with PatchCore, CFA, STFPM and
+        # the spectrogram adapters: torch tensors, and a per time frame score
+        # obtained by averaging the top-k frequency responses.
+        anomaly_maps = torch.from_numpy(score_map).unsqueeze(1)
+        anomaly_scores = anomaly_maps.flatten(start_dim=1).amax(dim=1)
+        map_without_channel = anomaly_maps.squeeze(1)
+        top_k = min(5, map_without_channel.shape[2])
+        tmp_scores = map_without_channel.topk(top_k, dim=2).values.mean(dim=2)
+        return anomaly_maps, anomaly_scores, tmp_scores
+
+    def resolve_output_size(self, x, dist_list):
+        """Spatial size the anomaly map must be reported at."""
+        if self.img_size is not None:
+            return tuple(int(value) for value in self.img_size)
+        if x.ndim == 4:
+            # caller already passed a spectrogram / feature map
+            return tuple(int(value) for value in x.shape[-2:])
+        # waveform input without a declared size: keep the embedding grid
+        return tuple(int(value) for value in dist_list.shape[-2:])
 
     def fit_multivariate_gaussian(self, embedding_vectors, update_params):
         """
@@ -283,12 +313,30 @@ class Padim(AudioVADModel):
         self.backbone = backbone_forward
 
         # save the true and random projection dimensions
-        self.t_d, default_d = EMBEDDING_SIZES[self.backbone_model_name][
-            tuple(self.layers_idxs)
-        ]
+        self.t_d, default_d = self.lookup_embedding_size(
+            self.backbone_model_name, self.layers_idxs
+        )
         if not hasattr(self, "d"):
             self.d = default_d
         return backbone_model
+
+    @staticmethod
+    def lookup_embedding_size(backbone_model_name, layers_idxs):
+        """Look up (total_channels, default_projection_dim) for a backbone/layer pair."""
+        if backbone_model_name not in EMBEDDING_SIZES:
+            raise KeyError(
+                f"Unsupported backbone {backbone_model_name!r} for PaDiM. "
+                f"Known backbones: {sorted(EMBEDDING_SIZES)}"
+            )
+        known_layers = EMBEDDING_SIZES[backbone_model_name]
+        key = tuple(layers_idxs)
+        if key not in known_layers:
+            raise KeyError(
+                f"Unsupported layer combination {key} for backbone "
+                f"{backbone_model_name!r}. Known combinations: "
+                f"{sorted(known_layers, key=str)}"
+            )
+        return known_layers[key]
 
     def get_model_savepath(self, save_path):
         return os.path.join(
@@ -322,9 +370,17 @@ class Padim(AudioVADModel):
         embeddings = embedding_vectors.view(batch_size, channels, patch_count).cpu().numpy()
         embeddings = np.moveaxis(embeddings, 1, 2)  # (batch, patch, channel)
 
-        assert (
-            self.gauss_mean is not None and self.gauss_cov is not None
-        ), "The model must be trained first."
+        if self.gauss_mean is None or self.gauss_cov is None:
+            raise RuntimeError("The model must be trained before computing distances.")
+
+        fitted_patches = self.gauss_mean.shape[1]
+        if patch_count != fitted_patches:
+            raise ValueError(
+                f"PaDiM was fitted on {fitted_patches} time-frequency patches but "
+                f"received {patch_count} ({height}x{width}). The test clips must "
+                "have the same duration as the training clips, because PaDiM "
+                "stores one Gaussian per patch."
+            )
 
         means = np.moveaxis(self.gauss_mean, 1, 0)  # (patch, channel)
         deltas = embeddings - means[None, :, :]

@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 from moviad.models.audio.audio_vad_model import AudioVADModel
 from moviad.models.training_args import TrainingArgs
 from moviad.utilities.custom_feature_extractor_trimmed import CustomFeatureExtractor
-from moviad.utilities.audio.audio_feature_exctractor import AudioFeatureExtractor
+from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 from moviad.models.audio.patchcore.anomaly_map import AnomalyMapGenerator
 from moviad.models.audio.patchcore.kcenter_greedy import KCenterGreedy
 

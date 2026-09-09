@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from moviad.models.audio.audio_vad_model import AudioVADModel
 from moviad.models.training_args import TrainingArgs
-from moviad.utilities.audio.audio_feature_exctractor import AudioFeatureExtractor
+from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 
 class STFPM(AudioVADModel):
 

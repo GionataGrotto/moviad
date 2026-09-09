@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from moviad.models.dinomaly.dinomaly import Dinomaly, DinomalyTrainArgs
 from moviad.models.audio.audio_vad_model import AudioVADModel
-from moviad.utilities.audio.audio_feature_exctractor import AudioFeatureExtractor
+from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 
 
 class AudioDinomaly(Dinomaly):
@@ -127,8 +127,11 @@ class AudioDinomaly(Dinomaly):
         # Audio spectrograms use (time, frequency) spatial axes. For the
         # temporal metric, pool the five highest-frequency anomaly values and
         # keep one score for every time frame.
-        top_k = min(5, anomaly_maps.shape[3])
-        temporal_scores = anomaly_maps.topk(top_k, dim=3).values.mean(dim=3)
+        # (batch, time), matching the temporal ground truth masks and the
+        # convention of PatchCore, CFA and STFPM.
+        map_without_channel = anomaly_maps.squeeze(1)
+        top_k = min(5, map_without_channel.shape[2])
+        temporal_scores = map_without_channel.topk(top_k, dim=2).values.mean(dim=2)
         return anomaly_maps, anomaly_scores, temporal_scores
 
     def train_step(self, batch, training_args: DinomalyTrainArgs):

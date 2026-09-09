@@ -80,15 +80,11 @@ def build_loaders(
 ):
     from moviad.datasets.mimi_dataset import MIMIDataset
     from moviad.utilities.configurations import Split
-    from benchmark_common import make_feature_extractor, make_spectrogram_transform
+    from benchmark_common import make_wave_to_spectrogram
 
     device = resolve_device(config.get(f"{method}_device", config["device"]))
     transform = Resample(orig_freq=16000, new_freq=44100)
-    if method.lower() == "dinomaly":
-        wave_to_spectro = make_spectrogram_transform(config)
-    else:
-        feature_extractor = make_feature_extractor(config, device, frozen=True)
-        wave_to_spectro = feature_extractor.spectro_transform
+    wave_to_spectro = make_wave_to_spectrogram(config, device, method)
 
     train_dataset = MIMIDataset(
         dataset_path.as_posix(),

@@ -27,7 +27,7 @@ def test_audio_dinomaly_waveform_contract_and_training_step():
         assert anomaly_map.ndim == 4
         assert anomaly_map.shape[0:2] == (1, 1)
         assert anomaly_score.shape == (1,)
-        assert temporal_score.ndim == 3
+        assert temporal_score.ndim == 2
 
         model.train()
         args = DinomalyTrainArgs(batch_size=1, epochs=1)

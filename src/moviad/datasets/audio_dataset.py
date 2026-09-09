@@ -391,7 +391,7 @@ class AudioAnomalyDataset(Dataset):
         random_state=None,
         target_sample_rate=44100,  # Hz
     ):
-        from moviad.utilities.audio.audio_feature_exctractor import (
+        from moviad.utilities.audio.audio_feature_extractor import (
             AudioFeatureExtractor,
         )
 

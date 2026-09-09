@@ -7,5 +7,6 @@ from .stfpm.stfpm import STFPM
 from .supersimplenet.supersimplenet import SuperSimpleNet
 from .ganomaly.ganomaly import Ganomaly
 from .cfa.cfa import CFA
+from .draem.draem import DRAEM
 
 from .vad_model import VADModel

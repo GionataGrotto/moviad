@@ -1,6 +1,6 @@
 import torch
 
-from moviad.utilities.audio.audio_feature_exctractor import _checkpoint_state_dict
+from moviad.utilities.audio.audio_feature_extractor import _checkpoint_state_dict
 
 
 def test_checkpoint_state_dict_accepts_direct_encoder_weights():
