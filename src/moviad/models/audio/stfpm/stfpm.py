@@ -67,15 +67,14 @@ class STFPM(AudioVADModel):
 
             return self.post_process(teacher_features, student_features)
         
-    def train(self, *args, **kwargs):
+    def train(self, mode: bool = True):
+        super().train(mode)
         self.teacher.model.eval()
-        self.student.model.train()
-        return super().train(*args, **kwargs)
+        self.student.model.train(mode)
+        return self
 
     def eval(self, *args, **kwargs):
-        self.teacher.model.eval()
-        self.student.model.eval()
-        return super().eval(*args, **kwargs)
+        return self.train(False)
 
     
     def post_process(self, t_feat, s_feat) -> torch.Tensor:

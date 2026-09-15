@@ -68,6 +68,7 @@ def build_loaders(
     subset: float = 1.0,
 ):
     from moviad.datasets.audio_dataset import generate_urban_esc_V1
+    from benchmark_common import audio_sample_rate
 
     device = resolve_device(config.get(f"{method}_device", config["device"]))
     envmix = config["envmix"]
@@ -83,6 +84,7 @@ def build_loaders(
         path_esc50=expand_path(envmix["esc50_path"]),
         seed=int(seed),
         max_num_samples=max_samples,
+        target_sample_rate=audio_sample_rate(config),
     )
     train_dataset = training_subset(train_dataset, subset, seed)
     generator = torch.Generator().manual_seed(seed)

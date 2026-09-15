@@ -336,6 +336,43 @@ default è sempre far-to-near; target e test non entrano nel pretraining SSL.
 
 ## Note pratiche
 
+### Configurazione audio DCASE
+
+Il frontend determina il sample rate: Cnn14 resta a 44100 Hz, HTSAT-base usa
+48000 Hz. I WAV DCASE devono essere a 16000 Hz prima del risampling.
+Nel runner standard si possono aggiungere alla sezione `dcase2026`:
+
+```json
+{
+  "channel": 0,
+  "train_domains": "source",
+  "test_domain": "source",
+  "run_name": "source_ch0_seed42"
+}
+```
+
+I default restano canale 0, training e test su entrambi i domini. Il runner SSL
+mantiene training source e i canali della sezione `dcase2026_ssl`.
+`run_name` e' opzionale: separa gli export in
+`dcase2026_task2_evaluator/dev/<run_name>` (oppure `dev_ssl/<run_name>` per SSL)
+e i riepiloghi in `<output_dir>/dev/<run_name>` (oppure `dev_ssl/<run_name>`).
+Scegliere un nome diverso per ciascun esperimento e per i debug; riutilizzare
+lo stesso nome mantiene il comportamento di sovrascrittura dei file.
+La configurazione e gli argomenti CLI vengono salvati insieme ai riepiloghi,
+aggiornati dopo ogni detector completato.
+
+Per rigenerare i binari di un run nominato, passare
+`--teams-root dcase2026_task2_evaluator/dev/<run_name>/teams/moviad` a
+`recompute_dcase2026_decisions.py`. Per SSL usare
+`dev_ssl/<run_name>/teams/moviad_ssl`. Nell'evaluator passare come
+`--ground_truth_root` la relativa directory `dev/<run_name>` o `dev_ssl/<run_name>`.
+
+I nuovi state dict audio includono i moduli dell'estrattore; vecchi checkpoint
+di detector privi di questi pesi non sono equivalenti e possono richiedere una
+migrazione. Il formato dei checkpoint CLAP di ingresso resta invariato.
+Il riuso SSL verifica anche seed, configurazione SSL e debug; in caso di
+differenze usare un nuovo run o `--force-ssl-pretrain`.
+
 - Se manca `clap_encoder.pth`, gli script con `pretrained: true` si fermano subito con un errore chiaro.
 - Se il PC non ha GPU, usa `device: "cpu"` o `device: "auto"`, ma il run completo sara' lento.
 - Se vuoi provare un solo modello, usa `--methods patchcore`, oppure `--methods padim`, ecc.

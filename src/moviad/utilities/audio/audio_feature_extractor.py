@@ -68,7 +68,7 @@ def _checkpoint_state_dict(checkpoint) -> dict[str, torch.Tensor]:
     return normalized
 
 
-class AudioFeatureExtractor:
+class AudioFeatureExtractor(torch.nn.Module):
 
     def __init__(
         self,
@@ -89,6 +89,8 @@ class AudioFeatureExtractor:
             device (torch.device): device to be used
         """
 
+        super().__init__()
+        self.frozen = frozen
         self.model_name = model_name
         self.layers_idx = layers_idx
         self.device = device
@@ -133,18 +135,25 @@ class AudioFeatureExtractor:
 
     def to(self, device: torch.device | str):
         self.device = torch.device(device)
-        self.model = self.model.to(self.device)
-        self.spectrogram_extractor = self.spectrogram_extractor.to(self.device)
-        self.logmel_extractor = self.logmel_extractor.to(self.device)
+        super().to(self.device)
         return self
 
-    def train(self):
-        self.model.train()
+    def train(self, mode: bool = True):
+        super().train(mode)
+        self.model.train(mode and not self.frozen)
+        self.spectrogram_extractor.eval()
+        self.logmel_extractor.eval()
+        self.spectro_transform.eval()
         return self
 
     def eval(self):
-        self.model.eval()
-        return self
+        return self.train(False)
+
+    @staticmethod
+    def sample_rate_for(model_name: str) -> int:
+        if model_name not in SUPPORTED_BACKBONES:
+            raise ValueError(f"Unsupported audio backbone: {model_name}")
+        return 48000 if model_name == "HTSAT-base" else 44100
 
     @staticmethod
     def _load_spectrogram_transform(model_name):
@@ -324,7 +333,7 @@ class AudioFeatureExtractor:
 
         return batch
 
-    def __call__(self, batch: torch.Tensor) -> list[torch.Tensor]:
+    def forward(self, batch: torch.Tensor) -> list[torch.Tensor]:
 
         if self.spectrogram_transform_enabled:
             batch = self.wavs_to_spectros(batch)

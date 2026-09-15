@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader
 try:
     from .benchmark_common import (
         check_audio_checkpoint,
+        prepare_audio_run,
         expand_path,
         fit_model,
         load_config,
@@ -42,6 +43,7 @@ try:
 except ImportError:  # supports ``python paper_benchmark/run_*.py``
     from benchmark_common import (
         check_audio_checkpoint,
+        prepare_audio_run,
         expand_path,
         fit_model,
         load_config,
@@ -109,7 +111,9 @@ def parse_args() -> argparse.Namespace:
 
 def _target_sample_rate(backbone: str) -> int:
     """Return the sample rate expected by the selected log-mel frontend."""
-    return 48000 if backbone == "HTSAT-base" else 44100
+    from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
+
+    return AudioFeatureExtractor.sample_rate_for(backbone)
 
 
 def _ssl_config(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -290,6 +294,7 @@ def _save_ssl_checkpoint(
     sample_rate: int,
     seed: int,
     losses: list[float],
+    debug: bool = False,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     state_dict = {
@@ -307,6 +312,7 @@ def _save_ssl_checkpoint(
             "seed": seed,
             "ssl_config": dict(ssl),
             "losses": losses,
+            "debug": debug,
             "encoder_state_dict": state_dict,
         },
         path,
@@ -428,13 +434,18 @@ def _prepare_ssl_checkpoint(
     )
     path = _checkpoint_path(checkpoint_root, machine, family)
     if path.exists() and not force:
-        _load_ssl_checkpoint(
+        checkpoint = _load_ssl_checkpoint(
             path,
             family=family,
             machine=machine,
             backbone=backbone,
             channel=int(ssl["pretrain_channel"]),
         )
+        if checkpoint.get("seed") != seed or checkpoint.get("ssl_config") != dict(ssl) or checkpoint.get("debug", False) != debug:
+            raise ValueError(
+                f"SSL settings differ from cached checkpoint {path}. "
+                "Use --force-ssl-pretrain or a separate --ssl-checkpoint-dir."
+            )
         print(f"[DCASE2026 SSL] reusing {path}")
         return path
     if skip_pretrain:
@@ -471,6 +482,7 @@ def _prepare_ssl_checkpoint(
         sample_rate=sample_rate,
         seed=seed,
         losses=losses,
+        debug=debug,
     )
     print(f"[DCASE2026 SSL] saved {path}")
     return path
@@ -723,6 +735,7 @@ def main() -> None:
     if args.debug:
         machines = machines[:1]
 
+    evaluator_root = prepare_audio_run(config, args, "dev_ssl")
     checkpoint_root = args.ssl_checkpoint_dir
     if checkpoint_root is None:
         configured_checkpoint_root = ssl.get("checkpoint_dir")
@@ -733,11 +746,6 @@ def main() -> None:
         )
     else:
         checkpoint_root = args.ssl_checkpoint_dir.expanduser().resolve()
-    evaluator_root = (
-        Path(__file__).resolve().parents[1]
-        / "dcase2026_task2_evaluator"
-        / "dev_ssl"
-    )
 
     rows = []
     for machine in machines:
@@ -778,6 +786,9 @@ def main() -> None:
                     args=args,
                     evaluator_root=evaluator_root,
                 )
+            )
+            (output_dir(config) / "dcase2026_task2_ssl_results.json").write_text(
+                json.dumps(rows, indent=2), encoding="utf-8"
             )
 
     if not args.ssl_only:

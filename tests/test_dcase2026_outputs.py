@@ -2,18 +2,33 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import pytest
 
 from paper_benchmark.run_dcase2026_task2 import (
     _aggregate_dcase_score,
     _write_pairs,
 )
 from paper_benchmark.benchmark_common import percentile_decisions
+from paper_benchmark.benchmark_common import prepare_audio_run
 
 
 def test_dcase_output_is_headerless_and_sorted(tmp_path):
     output = tmp_path / "scores.csv"
     _write_pairs(output, ["b.wav", "a.wav"], [2.0, 1.0])
     assert output.read_text(encoding="utf-8") == "a.wav,1.0\nb.wav,2.0\n"
+
+
+def test_dcase_rejects_misaligned_scores(tmp_path):
+    with pytest.raises(ValueError, match="matching lengths"):
+        _write_pairs(tmp_path / "scores.csv", ["a.wav"], [])
+
+
+def test_named_run_separates_outputs_and_records_config(tmp_path):
+    from argparse import Namespace
+    config = {"output_dir": str(tmp_path), "dcase2026": {"run_name": "source_ch0"}}
+    root = prepare_audio_run(config, Namespace(seed=42), "dev")
+    assert root.parts[-2:] == ("dev", "source_ch0")
+    assert (tmp_path / "dev" / "source_ch0" / "dev_config.json").exists()
 
 
 def test_dcase_temporal_topk_aggregation():

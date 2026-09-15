@@ -80,10 +80,10 @@ def build_loaders(
 ):
     from moviad.datasets.mimi_dataset import MIMIDataset
     from moviad.utilities.configurations import Split
-    from benchmark_common import make_wave_to_spectrogram
+    from benchmark_common import make_wave_to_spectrogram, audio_sample_rate
 
     device = resolve_device(config.get(f"{method}_device", config["device"]))
-    transform = Resample(orig_freq=16000, new_freq=44100)
+    transform = Resample(orig_freq=16000, new_freq=audio_sample_rate(config))
     wave_to_spectro = make_wave_to_spectrogram(config, device, method)
 
     train_dataset = MIMIDataset(

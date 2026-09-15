@@ -1,4 +1,5 @@
 import os
+import copy
 
 import torch
 from torch.optim import AdamW
@@ -115,7 +116,7 @@ class TrainerCFA():
                         print("New best model in f1_pxl")
                         print(f"Old f1_pxl: {best_metrics[metric]} New f1_pxl: {metrics[metric]}")
                         print("Saving best model")
-                        best_model_state = self.cfa_model.state_dict()
+                        best_model_state = copy.deepcopy(self.cfa_model.state_dict())
                 if metrics[metric] > best_metrics[metric]:
                     best_metrics[metric] = metrics[metric]
 

@@ -82,6 +82,23 @@ def output_dir(config: dict[str, Any]) -> Path:
     return path
 
 
+def prepare_audio_run(config: dict[str, Any], args, protocol: str) -> Path:
+    """Resolve an optional isolated DCASE run and persist its effective settings."""
+    run_name = config.get("dcase2026", {}).get("run_name")
+    root = PROJECT_ROOT / "dcase2026_task2_evaluator" / protocol
+    if run_name:
+        if not isinstance(run_name, str) or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in run_name):
+            raise ValueError("dcase2026.run_name must contain only letters, digits, '_' or '-'")
+        root = root / run_name
+        config["output_dir"] = str(expand_path(config["output_dir"]) / protocol / run_name)
+    destination = output_dir(config)
+    (destination / f"{protocol}_config.json").write_text(
+        json.dumps({"config": config, "arguments": vars(args)}, indent=2, default=str),
+        encoding="utf-8",
+    )
+    return root
+
+
 def resolve_device(requested: str) -> torch.device:
     if requested == "auto":
         requested = "cuda" if torch.cuda.is_available() else "cpu"
@@ -121,8 +138,28 @@ def percentile_decisions(
     return threshold, decisions
 
 
+class LimitedBatches:
+    """Re-iterable debug view: apply the limit separately for every epoch."""
+
+    def __init__(self, iterable, max_batches):
+        self.iterable = iterable
+        self.max_batches = max_batches
+
+    def __iter__(self):
+        return islice(self.iterable, self.max_batches)
+
+    def __len__(self):
+        return min(len(self.iterable), self.max_batches)
+
+
 def limited(iterable: Iterable[Any], debug: bool, max_batches: int) -> Iterable[Any]:
-    return islice(iterable, max_batches) if debug else iterable
+    return LimitedBatches(iterable, max_batches) if debug else iterable
+
+
+def audio_sample_rate(config: dict[str, Any]) -> int:
+    from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
+
+    return AudioFeatureExtractor.sample_rate_for(config.get("backbone", "Cnn14"))
 
 
 def append_csv(path: Path, row: dict[str, Any]) -> None:

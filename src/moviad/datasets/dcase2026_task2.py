@@ -87,6 +87,8 @@ class DCASE2026Task2Dataset(Dataset):
         self.domain = domain.lower()
         self.train_domains = train_domains.lower()
         self.channel = int(channel)
+        if self.channel < 0:
+            raise ValueError("channel must be non-negative")
         self.target_sample_rate = int(target_sample_rate)
         self._resampler = torchaudio.transforms.Resample(16000, self.target_sample_rate)
         if self.split not in {"train", "test"}:
@@ -125,7 +127,9 @@ class DCASE2026Task2Dataset(Dataset):
 
     @staticmethod
     def _load(path: Path) -> torch.Tensor:
-        waveform, _ = torchaudio.load(str(path))
+        waveform, sample_rate = torchaudio.load(str(path))
+        if sample_rate != 16000:
+            raise ValueError(f"Expected DCASE audio at 16000 Hz, got {sample_rate}: {path}")
         return waveform.to(torch.float32)
 
     def __getitem__(self, index: int):

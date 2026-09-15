@@ -21,6 +21,8 @@ from torch.utils.data import DataLoader
 try:
     from .benchmark_common import (
         check_audio_checkpoint,
+        audio_sample_rate,
+        prepare_audio_run,
         expand_path,
         fit_model,
         load_config,
@@ -35,6 +37,8 @@ try:
 except ImportError:  # supports ``python paper_benchmark/run_*.py``
     from benchmark_common import (
         check_audio_checkpoint,
+        audio_sample_rate,
+        prepare_audio_run,
         expand_path,
         fit_model,
         load_config,
@@ -180,14 +184,19 @@ def _score_model(
 
 def _write_pairs(path: Path, filenames, values) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if len(filenames) != len(values):
+        raise ValueError("Filenames and values must have matching lengths")
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, lineterminator="\n")
         for filename, value in sorted(zip(filenames, values)):
             writer.writerow([Path(filename).name, value])
 
 
-def _write_dev_ground_truth(dataset_path: Path, evaluator_root: Path, machine: str) -> None:
+def _write_dev_ground_truth(dataset_path: Path, evaluator_root: Path, machine: str, scored_paths=None) -> None:
     dataset = DCASE2026Task2Dataset(dataset_path, machine, "test")
+    if scored_paths is not None:
+        selected = {Path(path).name for path in scored_paths}
+        dataset.records = [record for record in dataset.records if record.path.name in selected]
     names = [record.path.name for record in dataset.records]
     labels = [record.label for record in dataset.records]
     domains = [0 if record.domain == "source" else 1 for record in dataset.records]
@@ -207,15 +216,23 @@ def _metrics(scores, labels, domains):
     }
     for name, domain in (("source", 0), ("target", 1)):
         mask = domains == domain
-        result[f"auc_{name}"] = metrics.roc_auc_score(labels[mask], scores[mask])
+        result[f"auc_{name}"] = (
+            metrics.roc_auc_score(labels[mask], scores[mask])
+            if len(np.unique(labels[mask])) == 2 else None
+        )
     return result
 
 
 def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     device = resolve_device(config.get(f"{method}_device", config["device"]))
     set_seed(seed)
-    train_ds = DCASE2026Task2Dataset(dataset_path, machine, "train", train_domains="all", channel=0)
-    test_ds = DCASE2026Task2Dataset(dataset_path, machine, "test", channel=0)
+    dcase = config.get("dcase2026", {})
+    channel = int(dcase.get("channel", 0))
+    train_domain = dcase.get("train_domains", "all")
+    test_domain = dcase.get("test_domain", "all")
+    sample_rate = audio_sample_rate(config)
+    train_ds = DCASE2026Task2Dataset(dataset_path, machine, "train", train_domains=train_domain, channel=channel, target_sample_rate=sample_rate)
+    test_ds = DCASE2026Task2Dataset(dataset_path, machine, "test", domain=test_domain, channel=channel, target_sample_rate=sample_rate)
     train_loader = DataLoader(train_ds, batch_size=int(config["batch_size"]), shuffle=True, num_workers=int(config["num_workers"]))
     test_loader = DataLoader(test_ds, batch_size=int(config["batch_size"]), shuffle=False, num_workers=int(config["num_workers"]))
     spectro = make_spectrogram_transform(config)
@@ -244,9 +261,11 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
         if args.score_topk is not None
         else int(dcase_config.get("score_topk", 5))
     )
-    train_scores, _, train_paths = _score_model(
-        model, train_loader, device, max_batches, aggregation, top_k
+    train_score_loader = DataLoader(train_ds, batch_size=int(config["batch_size"]), shuffle=False, num_workers=int(config["num_workers"]))
+    train_scores, _, _ = _score_model(
+        model, train_score_loader, device, max_batches, aggregation, top_k
     )
+    train_paths = [str(record.path) for record in train_ds.records[:len(train_scores)]]
     test_scores, labels, test_paths = _score_model(
         model, test_loader, device, max_batches, aggregation, top_k
     )
@@ -256,10 +275,17 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
         threshold, decisions = percentile_decisions(
             test_scores, args.decision_percentile
         )
-    domains = np.asarray([0 if record.domain == "source" else 1 for record in test_ds.records])
+    records = {str(record.path): record for record in test_ds.records}
+    domains = np.asarray([0 if records[path].domain == "source" else 1 for path in test_paths])
     result = _metrics(test_scores, labels, domains) if len(np.unique(labels)) == 2 else {}
     result.update({
         "method": method,
+        "seed": seed,
+        "channel": channel,
+        "sample_rate": sample_rate,
+        "train_domain": train_domain,
+        "test_domain": test_domain,
+        "debug": args.debug,
         "machine": machine,
         "threshold": threshold,
         "threshold_source": "test" if threshold is not None else None,
@@ -278,7 +304,7 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     _write_pairs(team_dir / f"anomaly_score_{machine}_section_00_test.csv", test_paths, test_scores)
     if decisions is not None:
         _write_pairs(team_dir / f"decision_result_{machine}_section_00_test.csv", test_paths, decisions)
-    _write_dev_ground_truth(dataset_path, evaluator_root, machine)
+    _write_dev_ground_truth(dataset_path, evaluator_root, machine, test_paths)
     return result
 
 
@@ -305,7 +331,7 @@ def main() -> None:
     dataset_path = expand_path(dataset_path_value)
     # Keep development ground truth/results separate from the upstream
     # evaluation-set files shipped by the evaluator repository.
-    evaluator_root = Path(__file__).resolve().parents[1] / "dcase2026_task2_evaluator" / "dev"
+    evaluator_root = prepare_audio_run(config, args, "dev")
     machines = args.machines or discover_machine_types(dataset_path)
     if args.debug:
         machines = machines[:1]
@@ -314,6 +340,7 @@ def main() -> None:
         for machine in machines:
             print(f"[DCASE2026] method={method} machine={machine}")
             rows.append(run_one(method, config, dataset_path, machine, args.seed, args, evaluator_root))
+            (output_dir(config) / "dcase2026_task2_results.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
     result_path = output_dir(config) / "dcase2026_task2_results.json"
     result_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
     print(json.dumps(rows, indent=2))
