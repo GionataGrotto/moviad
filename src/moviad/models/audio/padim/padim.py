@@ -44,8 +44,13 @@ EMBEDDING_SIZES = {
     "wide_resnet50_2": {("layer1", "layer2", "layer3"): (1792, 550)},
     "Cnn14": {("conv_block2", "conv_block3", "conv_block4"): (896, 225)},
     "HTSAT-base": {
-        ("1", "2", "3"): (1792, 225),
-        ("0", "1", "2"): (896, 225),
+        # HTSAT's 4 Swin stages have 256, 512, 1024, 1024 channels (the last
+        # stage has no further PatchMerging, so it keeps stage 2's width).
+        # Verified empirically against the real model: the values previously
+        # here were wrong and made PaDiM crash the moment it tried to fit,
+        # for both layer combinations.
+        ("1", "2", "3"): (512 + 1024 + 1024, 225),
+        ("0", "1", "2"): (256 + 512 + 1024, 225),
     },
 }
 

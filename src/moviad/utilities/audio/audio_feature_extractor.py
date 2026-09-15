@@ -308,13 +308,20 @@ class AudioFeatureExtractor(torch.nn.Module):
             for idx in self.layers_idx:
                 layer_idx = int(idx) if str(idx).isdigit() else int(str(idx).split(".")[-1])
                 layer = self.model.layers[layer_idx]
+                freq_ratio = self.model.freq_ratio
 
-                def htsat_hook(module, input, output, layer_idx=layer_idx):
+                def htsat_hook(module, input, output, freq_ratio=freq_ratio):
                     tokens = output[0] if isinstance(output, tuple) else output
-                    # HTSAT has 64x64 patch tokens, halved at every stage.
-                    side = 64 // (2 ** layer_idx)
+                    # Every HTSAT stage keeps a square token grid (the model
+                    # squares the spectrogram up front, see reshape_wav2img),
+                    # but the side shrinks at each of the first num_layers - 1
+                    # stages (PatchMerging) and then stays fixed at the last
+                    # one. Deriving it from the token count instead of a fixed
+                    # per-stage formula keeps this correct for every stage.
+                    side = round(tokens.shape[1] ** 0.5)
+                    grid = tokens.transpose(1, 2).reshape(tokens.shape[0], tokens.shape[2], side, side)
                     self.features.append(
-                        tokens.transpose(1, 2).reshape(tokens.shape[0], tokens.shape[2], side, side)
+                        AudioFeatureExtractor._unshuffle_htsat_tokens(grid, freq_ratio)
                     )
 
                 layer.register_forward_hook(htsat_hook)
@@ -325,6 +332,39 @@ class AudioFeatureExtractor(torch.nn.Module):
                 # example layers: ["conv_block2", "conv_block3", "conv_block4"]
                 getattr(self.model, idx).register_forward_hook(hook)
 
+    @staticmethod
+    def _unshuffle_htsat_tokens(tokens_grid: torch.Tensor, freq_ratio: int) -> torch.Tensor:
+        """Undo HTSAT's "reshape_wav2img" trick on a hooked token grid.
+
+        HTSAT squares a long, narrow (time, frequency) spectrogram by slicing
+        the time axis into ``freq_ratio`` contiguous chunks and stacking them
+        along the frequency axis, so its Swin backbone sees a roughly square
+        image. That makes the intermediate token grid's height axis a mix of
+        (chunk index, true frequency) and its width axis "time within one
+        chunk" -- not a plain (time, frequency) map. Feeding that raw grid to
+        code that expects (time, frequency), such as ``F.interpolate`` to the
+        spectrogram size or the top-k-over-frequency temporal score, silently
+        scrambles both the pixel-level anomaly map and the per-time-frame
+        score. This reproduces the un-scrambling HTSAT's own final
+        ``forward_features`` head performs, generalised to any intermediate
+        stage's resolution, restoring a genuine (frequency, time) layout with
+        every chunk back in chronological order.
+
+        Args:
+            tokens_grid: hooked stage output reshaped to ``[B, C, side, side]``.
+            freq_ratio: ``HTSAT_Swin_Transformer.freq_ratio`` of the model
+                (number of chunks the time axis was split into).
+
+        Returns:
+            Tensor of shape ``[B, C, side // freq_ratio, side * freq_ratio]``,
+            genuinely ordered as (frequency, time).
+        """
+        batch, channels, side, _ = tokens_grid.shape
+        freq_sub = side // freq_ratio
+        x = tokens_grid.reshape(batch, channels, freq_ratio, freq_sub, side)
+        x = x.permute(0, 1, 3, 2, 4).contiguous()
+        return x.reshape(batch, channels, freq_sub, freq_ratio * side)
+
     def wavs_to_spectros(self, batch: torch.Tensor) -> torch.Tensor:
 
         batch = batch.to(self.device)
@@ -333,6 +373,63 @@ class AudioFeatureExtractor(torch.nn.Module):
 
         return batch
 
+    def _forward_htsat_single_window(self, spectrogram: torch.Tensor) -> list[torch.Tensor]:
+        """Run one HTSAT-base forward pass on a spectrogram within its fixed window."""
+        self.features = []
+        x = spectrogram.transpose(1, 3)
+        x = self.model.bn0(x).transpose(1, 3)
+        x = self.model.reshape_wav2img(x)
+        self.model.forward_features(x)
+        return self.features
+
+    def _forward_htsat_windowed(self, spectrogram: torch.Tensor) -> list[torch.Tensor]:
+        """Run HTSAT-base on a spectrogram longer than its fixed input window.
+
+        HTSAT's Swin transformer only accepts clips up to
+        ``spec_size * freq_ratio`` time frames (about 10.24s with this
+        project's 48kHz/hop-480 frontend) because its positional embeddings
+        and window attention are tied to a fixed resolution. Longer clips are
+        split into non-overlapping windows of at most that many frames (the
+        last one zero-padded, so real content is never time-stretched to fill
+        the window the way ``reshape_wav2img`` would), each window is run
+        through the normal single-window path, and the per-layer feature maps
+        are concatenated back along the true time axis -- the last axis after
+        ``_unshuffle_htsat_tokens`` -- with the padded tail of the last
+        window's contribution cropped out proportionally to how much of it
+        was real audio.
+
+        Assumes every clip in the batch has the same length, which holds for
+        every dataset in this benchmark (a batch is collated from
+        fixed-duration clips).
+        """
+        target_T = self.model.spec_size * self.model.freq_ratio
+        total_T = spectrogram.shape[2]
+
+        window_maps: list[list[torch.Tensor]] | None = None
+        start = 0
+        while start < total_T:
+            real_len = min(target_T, total_T - start)
+            window = spectrogram[:, :, start:start + real_len, :]
+            if real_len < target_T:
+                pad = spectrogram.new_zeros(
+                    spectrogram.shape[0], spectrogram.shape[1],
+                    target_T - real_len, spectrogram.shape[3],
+                )
+                window = torch.cat((window, pad), dim=2)
+
+            window_features = self._forward_htsat_single_window(window)
+            if window_maps is None:
+                window_maps = [[] for _ in window_features]
+
+            for layer_idx, feature_map in enumerate(window_features):
+                output_T = feature_map.shape[-1]
+                valid_T = max(1, round(output_T * real_len / target_T))
+                window_maps[layer_idx].append(feature_map[..., :valid_T])
+
+            start += target_T
+
+        return [torch.cat(maps, dim=-1) for maps in window_maps]
+
     def forward(self, batch: torch.Tensor) -> list[torch.Tensor]:
 
         if self.spectrogram_transform_enabled:
@@ -340,17 +437,17 @@ class AudioFeatureExtractor(torch.nn.Module):
 
         self.spec_shape = batch.shape
 
-        self.features = []
-
         if self.model_name == "HTSAT-base":
-            x = batch.transpose(1, 3)
-            x = self.model.bn0(x).transpose(1, 3)
-            x = self.model.reshape_wav2img(x)
-            self.model.forward_features(x)
+            target_T = self.model.spec_size * self.model.freq_ratio
+            if batch.shape[2] > target_T:
+                self.features = self._forward_htsat_windowed(batch)
+            else:
+                self.features = self._forward_htsat_single_window(batch)
         else:
+            self.features = []
             self.model(batch)
-        
+
         return self.features
-    
+
     def disable_wavs_to_spectros(self):
         self.spectrogram_transform_enabled = False
