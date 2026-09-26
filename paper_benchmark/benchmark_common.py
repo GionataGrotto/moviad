@@ -123,6 +123,16 @@ def percentile_decisions(
     DCASE decisions are intentionally test-calibrated for the requested
     evaluation protocol.  The resulting threshold must therefore not be
     interpreted as an independent validation threshold.
+
+    This threshold assumes a specific anomaly prevalence (100 - percentile,
+    e.g. ~1% for the default of 99): it is meant for test sets whose class
+    balance matches that assumption, such as the official DCASE evaluation
+    split. On a differently-balanced set (e.g. a 50/50 subset built for
+    exploratory analysis) it can end up flagging far fewer or far more
+    samples than the set's true anomaly rate, producing degenerate
+    precision/recall/F1 regardless of how good the ranking actually is. Use
+    ``optimal_f1_metrics`` instead when comparing methods' ranking quality
+    independently of that calibration choice.
     """
     score_array = np.asarray(list(scores), dtype=float)
     if score_array.size == 0:
@@ -136,6 +146,48 @@ def percentile_decisions(
     threshold = float(np.percentile(score_array, percentile))
     decisions = (score_array >= threshold).astype(int)
     return threshold, decisions
+
+
+def optimal_f1_metrics(scores: np.ndarray, labels: np.ndarray) -> dict[str, float]:
+    """Precision/recall/F1 at the threshold that maximises F1 on this data.
+
+    ``percentile_decisions`` picks a threshold without looking at the labels,
+    matching the DCASE evaluator's deployment-style protocol: it assumes a
+    fixed expected anomaly rate and is only meaningful when the test set's
+    real prevalence matches that assumption. This instead reports the best
+    F1 achievable in hindsight, the same threshold-free diagnostic this
+    project already uses for the MVTec benchmark (see ``cal_f1_img`` in
+    ``moviad.utilities.metrics``). It ranks methods by the quality of their
+    anomaly ranking rather than by an arbitrarily calibrated threshold, so it
+    stays informative even on a hand-built, non-representative test subset
+    (e.g. a balanced 50/50 split) where ``percentile_decisions`` degenerates
+    to flagging only a handful of samples regardless of the ranking's
+    quality. It picks its threshold using the very labels it is scored
+    against, though, so it is optimistic and must not be reported as a
+    deployment-realistic number or fed into the official DCASE evaluator.
+
+    Returns an empty dict when ``labels`` has fewer than two classes, since
+    precision/recall/F1 are undefined in that case.
+    """
+    scores = np.asarray(scores, dtype=float)
+    labels = np.asarray(labels)
+    if np.unique(labels).size != 2:
+        return {}
+
+    from sklearn.metrics import precision_recall_curve
+
+    precision, recall, _ = precision_recall_curve(labels, scores)
+    denominator = precision + recall
+    f1 = np.divide(
+        2 * precision * recall, denominator,
+        out=np.zeros_like(denominator), where=denominator != 0,
+    )
+    best = int(np.argmax(f1))
+    return {
+        "f1_opt": float(f1[best]),
+        "precision_opt": float(precision[best]),
+        "recall_opt": float(recall[best]),
+    }
 
 
 class LimitedBatches:

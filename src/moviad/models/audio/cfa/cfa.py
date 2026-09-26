@@ -157,7 +157,12 @@ class CFA(AudioVADModel):
                 heatmaps = heatmaps.unsqueeze(0)
 
             heatmaps = CFA.gaussian_smooth_torch(heatmaps, sigma=4)
-            img_scores = CFA.rescale(heatmaps)
+            # NOTE: this used to also compute `CFA.rescale(heatmaps)` into
+            # img_scores first, but that result was immediately overwritten
+            # below and never used -- dead code, removed. If a normalized
+            # (rescaled) image score was actually intended here instead of
+            # the raw max distance, flag it for a decision before changing
+            # what the model reports.
             img_scores = scores.reshape(scores.shape[0], -1).max(axis=1).values
 
             tmp_scores = heatmaps.topk(5,dim=2).values.mean(dim=2)
@@ -375,7 +380,10 @@ class CFA(AudioVADModel):
 
     @staticmethod
     def rescale(x):
-        return (x - x.min()) / (x.max() - x.min())
+        # A heatmap whose values are all identical makes max() - min() == 0,
+        # turning every value into NaN instead of a valid [0, 1] map.
+        span = x.max() - x.min()
+        return (x - x.min()) / span if span != 0 else torch.zeros_like(x)
 
     @staticmethod
     def get_threshold(gt: np.ndarray, score: np.ndarray) -> float:

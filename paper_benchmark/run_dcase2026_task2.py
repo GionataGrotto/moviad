@@ -28,6 +28,7 @@ try:
         load_config,
         make_model,
         make_spectrogram_transform,
+        optimal_f1_metrics,
         output_dir,
         percentile_decisions,
         resolve_device,
@@ -44,6 +45,7 @@ except ImportError:  # supports ``python paper_benchmark/run_*.py``
         load_config,
         make_model,
         make_spectrogram_transform,
+        optimal_f1_metrics,
         output_dir,
         percentile_decisions,
         resolve_device,
@@ -214,12 +216,21 @@ def _metrics(scores, labels, domains):
         "auc_all": metrics.roc_auc_score(labels, scores),
         "pauc_all": metrics.roc_auc_score(labels, scores, max_fpr=0.1),
     }
+    # Threshold-free, prevalence-independent complement to the DCASE
+    # evaluator's percentile-calibrated precision/recall/F1: see
+    # optimal_f1_metrics's docstring for why the two are not interchangeable
+    # and when each is the right one to read.
+    for key, value in optimal_f1_metrics(scores, labels).items():
+        result[f"{key}_all"] = value
     for name, domain in (("source", 0), ("target", 1)):
         mask = domains == domain
         result[f"auc_{name}"] = (
             metrics.roc_auc_score(labels[mask], scores[mask])
             if len(np.unique(labels[mask])) == 2 else None
         )
+        if len(np.unique(labels[mask])) == 2:
+            for key, value in optimal_f1_metrics(scores[mask], labels[mask]).items():
+                result[f"{key}_{name}"] = value
     return result
 
 

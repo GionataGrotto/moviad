@@ -73,4 +73,8 @@ class AnomalyMapGenerator(nn.Module):
         return self.compute_anomaly_map(patch_scores, image_size)
 
     def rescale(x):
-        return (x - x.min()) / (x.max() - x.min())
+        # A batch whose scores are all identical (e.g. a completely uniform
+        # patch distance) makes max() - min() == 0, turning every value into
+        # NaN and silently corrupting every metric computed downstream.
+        span = x.max() - x.min()
+        return (x - x.min()) / span if span != 0 else torch.zeros_like(x)
