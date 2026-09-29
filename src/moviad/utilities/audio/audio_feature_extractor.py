@@ -107,7 +107,7 @@ class AudioFeatureExtractor(torch.nn.Module):
         if model_name == "Cnn14":
             self._load_cnn14(pre_trained, self.checkpoint_path)
         elif model_name == "Cnn14_finetuned":
-            self._load_cnn14_finetuned()
+            self._load_cnn14_finetuned(self.checkpoint_path)
         elif model_name == "HTSAT-base":
             self._load_htsat_base(pre_trained, self.checkpoint_path)
 
@@ -254,21 +254,37 @@ class AudioFeatureExtractor(torch.nn.Module):
             checkpoint = torch.load(p, map_location=self.device, weights_only=False)
             self.model.load_state_dict(_checkpoint_state_dict(checkpoint))
 
-    def _load_cnn14_finetuned(self):
-
+    def _load_cnn14_finetuned(self, checkpoint_path: Path | None = None):
+        """Load a plain (non-contrastive) Cnn14, e.g. the official PANN
+        AudioSet-classification checkpoint (Kong et al.), as opposed to
+        ``_load_cnn14``'s CLAP-contrastive audio-text encoder. Both wrap the
+        same Cnn14 architecture but are pretrained with different objectives,
+        so their checkpoints are not interchangeable.
+        """
         self.spectrogram_extractor, self.logmel_extractor, self.spectro_transform = (
             self._load_spectrogram_transform(self.model_name)
         )
 
         out_emb = 2048
-        d_proj = 1024
         classes_num = 527
 
-        self.model = Cnn14(1, out_emb)
+        self.model = Cnn14(classes_num, out_emb)
 
-        p = Path(__file__).resolve().parents[2] / "weights" / "finetuned_cnn14.pth"
+        p = checkpoint_path or (Path(__file__).resolve().parents[2] / "weights" / "finetuned_cnn14.pth")
         assert p.exists(), f"AudioFeatureExtractor Cnn14 weights not found in path: {p}"
-        self.model.load_state_dict(torch.load(p))
+        checkpoint = torch.load(p, map_location="cpu", weights_only=False)
+        # Official PANN releases (e.g. Cnn14_mAP=0.431.pth) wrap the weights
+        # under "model" and also ship the model's own spectrogram/logmel
+        # frontend. This project computes the spectrogram separately (see
+        # wavs_to_spectros), so only the Cnn14 submodules themselves (bn0,
+        # conv_block1..6, fc1, fc_audioset) belong in self.model's state dict.
+        state = checkpoint.get("model", checkpoint) if isinstance(checkpoint, Mapping) else checkpoint
+        state = {
+            key: value
+            for key, value in state.items()
+            if not key.startswith(("spectrogram_extractor.", "logmel_extractor."))
+        }
+        self.model.load_state_dict(state)
 
     def _load_htsat_base(self, pretrained=True, checkpoint_path: Path | None = None):
         self.spectrogram_extractor, self.logmel_extractor, self.spectro_transform = (
