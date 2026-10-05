@@ -178,3 +178,35 @@ def test_beats_encoder_feeds_the_knn_detector_end_to_end(fake_beats):
     _, scores, _ = model(torch.randn(5, 40))
 
     assert scores.shape == (5,) and torch.isfinite(scores).all()
+
+
+def test_a_missing_dependency_inside_beats_is_not_reported_as_a_missing_beats(tmp_path):
+    (tmp_path / "BEATs.py").write_text("import a_module_that_does_not_exist\n")
+    sys.modules.pop("BEATs", None)
+    try:
+        with pytest.raises(ModuleNotFoundError, match="a_module_that_does_not_exist"):
+            BEATsEncoder._import_beats(tmp_path)
+        sys.path.remove(str(tmp_path))  # the failed attempt left the folder on the import path
+        sys.modules.pop("BEATs", None)
+        with pytest.raises(ModuleNotFoundError, match="Cannot find BEATs.py"):
+            BEATsEncoder._import_beats(tmp_path / "wrong_folder")
+    finally:
+        sys.path[:] = [p for p in sys.path if p not in (str(tmp_path), str(tmp_path / "wrong_folder"))]
+        sys.modules.pop("BEATs", None)
+
+
+def test_beats_folder_that_is_a_package_is_imported_as_a_package(tmp_path):
+    package = tmp_path / "beats"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "backbone.py").write_text("MARKER = 7\n")
+    (package / "BEATs.py").write_text(
+        "from beats.backbone import MARKER\nclass BEATs: marker = MARKER\nclass BEATsConfig: pass\n"
+    )
+    try:
+        beats, config = BEATsEncoder._import_beats(package)
+        assert beats.marker == 7 and config.__name__ == "BEATsConfig"
+    finally:
+        sys.path[:] = [p for p in sys.path if p != str(tmp_path)]
+        for name in [n for n in sys.modules if n == "beats" or n.startswith("beats.")]:
+            sys.modules.pop(name)
