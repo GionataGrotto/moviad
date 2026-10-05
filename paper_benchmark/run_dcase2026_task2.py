@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 try:
     from .benchmark_common import (
         check_audio_checkpoint,
-        audio_sample_rate,
+        method_sample_rate,
         prepare_audio_run,
         expand_path,
         fit_model,
@@ -38,7 +38,7 @@ try:
 except ImportError:  # supports ``python paper_benchmark/run_*.py``
     from benchmark_common import (
         check_audio_checkpoint,
-        audio_sample_rate,
+        method_sample_rate,
         prepare_audio_run,
         expand_path,
         fit_model,
@@ -241,7 +241,7 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     channel = int(dcase.get("channel", 0))
     train_domain = dcase.get("train_domains", "all")
     test_domain = dcase.get("test_domain", "all")
-    sample_rate = audio_sample_rate(config)
+    sample_rate = method_sample_rate(method, config)
     train_ds = DCASE2026Task2Dataset(dataset_path, machine, "train", train_domains=train_domain, channel=channel, target_sample_rate=sample_rate)
     test_ds = DCASE2026Task2Dataset(dataset_path, machine, "test", domain=test_domain, channel=channel, target_sample_rate=sample_rate)
     train_loader = DataLoader(train_ds, batch_size=int(config["batch_size"]), shuffle=True, num_workers=int(config["num_workers"]))

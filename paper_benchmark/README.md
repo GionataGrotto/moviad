@@ -281,6 +281,25 @@ python paper_benchmark/run_dcase2026_task2.py \
 Sono disponibili `max`, `mean` e `temporal_topk_mean`; per quest'ultima si può
 impostare il numero di valori con `--score-topk`.
 
+### kNN su embedding BEATs (DCASE)
+
+Metodo `knn`: embedding clip-level di un encoder pre-addestrato (media nel tempo del
+blocco transformer scelto) e punteggio = distanza dal vicino piu' prossimo nei clip
+di training. E' la famiglia "embedding pre-addestrati + outlier detection".
+Servono due file che non sono nel repo: i sorgenti BEATs (`BEATs.py` di unilm) e un
+checkpoint come `BEATs_iter3_plus_AS2M.pt`. L'audio viene caricato a 16 kHz.
+
+```bash
+python paper_benchmark/run_dcase2026_task2.py   --config paper_benchmark/config.dcase2026_knn_beats.example.json   --methods knn
+```
+
+`knn_layers` indica i blocchi transformer con numerazione da 1 (12 = ultimo di
+BEATs-base); con piu' layer le distanze vengono mediate. `knn_metric` e' `cosine`
+o `euclidean`, `knn_top_k` la media sui k vicini. Il modello non ha mappe
+tempo-frequenza: ogni aggregazione (`max`, `mean`, `temporal_topk_mean`) restituisce
+lo stesso punteggio. Non c'e' SMOTE sul target: il loader di training non espone il
+dominio del clip.
+
 Il runner salva gli score continui di training come `train_anomaly_score_*.csv` e
 gli score continui di test come `anomaly_score_*.csv`; non scrive decisioni
 binarie per default. Dopo aver scelto il percentile, rigenera le decisioni senza

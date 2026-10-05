@@ -47,6 +47,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "padim_covariance_reg": 0.01,
     "padim_streaming": True,
     "clap_checkpoint": None,
+    "knn_beats_checkpoint": None,
+    "knn_beats_code_dir": None,
+    "knn_layers": [10],
+    "knn_top_k": 1,
+    "knn_metric": "cosine",
     "dcase2026": {
         "score_aggregation": "temporal_topk_mean",
         "score_topk": 5,
@@ -307,6 +312,15 @@ def make_wave_to_spectrogram(config: dict[str, Any], device: torch.device, metho
     return make_feature_extractor(config, device, frozen=True).spectro_transform
 
 
+def method_sample_rate(method: str, config: dict[str, Any]) -> int:
+    """Sample rate the waveforms must be loaded at for ``method`` (BEATs needs 16 kHz)."""
+    if method.lower() == "knn":
+        from moviad.models.audio.knn import BEATsEncoder
+
+        return BEATsEncoder.sample_rate
+    return audio_sample_rate(config)
+
+
 def make_model(
     method: str,
     config: dict[str, Any],
@@ -326,6 +340,24 @@ def make_model(
             memory_bank_size=int(config["memory_bank_size"]),
             blur=True,
         ).to(device)
+
+    if method == "knn":
+        from moviad.models.audio.knn import AudioKNN, BEATsEncoder
+
+        if not config.get("knn_beats_checkpoint"):
+            raise ValueError("Method 'knn' needs knn_beats_checkpoint (and knn_beats_code_dir) in the config")
+        encoder = BEATsEncoder(
+            expand_path(config["knn_beats_checkpoint"]),
+            code_dir=config.get("knn_beats_code_dir"),
+            layers=config.get("knn_layers", [10]),
+            device=device,
+        )
+        return AudioKNN(
+            encoder,
+            device,
+            top_k=int(config.get("knn_top_k", 1)),
+            metric=config.get("knn_metric", "cosine"),
+        )
 
     if method == "padim":
         from moviad.models.audio.padim.padim import Padim
@@ -420,6 +452,11 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
             force_cpu=bool(config.get("force_cpu_coreset", False)),
         )
         trainer.train(streaming=bool(config.get("streaming", False)))
+        model.eval()
+        return
+
+    if method == "knn":
+        model.fit(train_iter)
         model.eval()
         return
 

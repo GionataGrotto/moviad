@@ -1,0 +1,19 @@
+{
+  "device": "auto",
+  "output_dir": "results/paper_benchmark",
+  "batch_size": 8,
+  "num_workers": 0,
+  "methods": ["knn"],
+  "knn_beats_checkpoint": "~/models/beats/BEATs_iter3_plus_AS2M.pt",
+  "knn_beats_code_dir": "~/models/beats",
+  "knn_layers": [10],
+  "knn_top_k": 1,
+  "knn_metric": "cosine",
+  "dcase2026": {
+    "dataset_path": "~/datasets/DCASE",
+    "channel": 0,
+    "train_domains": "source",
+    "test_domain": "source",
+    "score_aggregation": "max"
+  }
+}
