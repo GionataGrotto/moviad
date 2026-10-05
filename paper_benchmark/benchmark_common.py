@@ -34,7 +34,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "draem_learning_rate": 1e-4,
     "batch_size": 4,
     "num_workers": 0,
-    "force_cpu_coreset": True,
+    "force_cpu_coreset": False,
     "methods": ["patchcore"],
     "epochs": 1,
     "memory_bank_size": 30000,
@@ -417,7 +417,7 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
             train_iter,
             test_loader,
             device,
-            force_cpu=bool(config.get("force_cpu_coreset", True)),
+            force_cpu=bool(config.get("force_cpu_coreset", False)),
         )
         trainer.train(streaming=bool(config.get("streaming", False)))
         model.eval()

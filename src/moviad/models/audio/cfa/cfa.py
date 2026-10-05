@@ -14,10 +14,9 @@ from sklearn.cluster import KMeans
 from scipy.ndimage import gaussian_filter
 from sklearn.metrics import precision_recall_curve
 import numpy as np
-import cv2 as cv
-import matplotlib.pyplot as plt
 
 from moviad.models.audio.audio_vad_model import AudioVADModel
+from moviad.models.audio.components.feature_ops import temporal_topk_scores
 from moviad.models.audio.components.cfa.descriptor import Descriptor
 from moviad.models.training_args import TrainingArgs
 from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
@@ -165,7 +164,7 @@ class CFA(AudioVADModel):
             # what the model reports.
             img_scores = scores.reshape(scores.shape[0], -1).max(axis=1).values
 
-            tmp_scores = heatmaps.topk(5,dim=2).values.mean(dim=2)
+            tmp_scores = temporal_topk_scores(heatmaps)
 
             if len(heatmaps.shape) == 2:
                 return heatmaps.view(1,1,heatmaps.shape[0], heatmaps.shape[1]), img_scores, tmp_scores
@@ -211,7 +210,7 @@ class CFA(AudioVADModel):
         """
 
         for i, x in enumerate(tqdm(data_loader)):
-            x = x.to(self.device)
+            x = self.batch_input(x).to(self.device)
             p = self.feature_extractor(x)
 
             if isinstance(p, dict):
@@ -304,58 +303,6 @@ class CFA(AudioVADModel):
         self.C = 0
         self.Descriptor = None
         self.feature_maps_shape = None
-
-    def save_anomaly_map(self, dirpath, anomaly_map, pred_score, filepath, x_type, mask):
-        """
-        Args:
-            dirpath     (str)       : Output directory path.
-            anomaly_map (np.ndarray): Anomaly map with the same size as the input image.
-            filepath    (str)       : Path of the input image.
-            x_type      (str)       : Anomaly type (e.g. "good", "crack", etc).
-            mask
-        """
-
-        def cvt2heatmap(gray):
-            return cv.applyColorMap(np.uint8(gray), cv.COLORMAP_JET)
-
-        # Get the image file name.
-        filename = os.path.basename(filepath)
-
-        # Load the image file and resize.
-        original_image = cv.imread(filepath)
-        original_image = cv.resize(original_image, anomaly_map.shape[:2])
-
-        # Normalize anomaly map for easier visualization.
-        anomaly_map_norm = cvt2heatmap(255 * CFA.rescale(anomaly_map))
-
-        # Overlay the anomaly map to the origimal image.
-        output_image = (anomaly_map_norm / 2 + original_image / 2).astype(np.uint8)
-
-        # Create a figure and axes
-        fig, axes = plt.subplots(1, 3, figsize=(10, 5))
-
-        #convert the images to RGB
-        original_image = cv.cvtColor(original_image, cv.COLOR_BGR2RGB)
-        output_image = cv.cvtColor(output_image, cv.COLOR_BGR2RGB)
-
-        # Display the input image
-        axes[0].imshow(original_image)
-        axes[0].set_title(f'Original Image {x_type}')
-        axes[0].axis('off')
-
-        # Display the mask image
-        axes[1].imshow(mask.squeeze(), cmap ='gray')
-        axes[1].set_title(f'Mask')
-        axes[1].axis('off')
-
-        # Display the final image
-        axes[2].imshow(output_image)
-        axes[2].set_title(f'Heatmap {pred_score}')
-        axes[2].axis('off')
-
-        # Show the plot
-        plt.savefig(str(dirpath / f"{x_type}_{filename}.jpg"))
-
 
     # --------------- SEGMENTATION MASK PRODUCTION ---------------- #
 

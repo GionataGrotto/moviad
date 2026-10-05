@@ -1,4 +1,4 @@
-"""Anomaly Map Generator for the PatchCore model implementation."""
+"""Anomaly map generator for the audio PatchCore."""
 
 # Copyright (C) 2022-2024 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
@@ -6,78 +6,58 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-from torch.nn import functional as F 
-from torchvision.transforms import GaussianBlur
+from torch.nn import functional as F
+
+from moviad.models.audio.components.feature_ops import gaussian_smooth
+
 
 class AnomalyMapGenerator(nn.Module):
-    """Generate Anomaly Heatmap.
+    """Upsample patch scores to the spectrogram size and smooth them.
 
     Args:
-        The anomaly map is upsampled to this dimension.
-        sigma (int, optional): Standard deviation for Gaussian Kernel.
-            Defaults to ``4``.
+        sigma: standard deviation of the Gaussian smoothing kernel.
+        blur: apply the Gaussian smoothing.
+        normalize: min-max normalise the maps over the whole batch. Off by default:
+            the statistics of one batch are not those of another, so a normalised
+            map has scores that cannot be compared across batches (and any
+            per-clip score derived from it, e.g. the DCASE temporal top-k pooling,
+            becomes dependent on which clips share the batch).
     """
 
-    def __init__(
-        self,
-        sigma: int = 4,
-        blur=True,
-    ) -> None:
+    def __init__(self, sigma: int = 4, blur: bool = True, normalize: bool = False) -> None:
         super().__init__()
-        kernel_size = 2 * int(4.0 * sigma + 0.5) + 1
-        if blur:
-            self.blur = GaussianBlur(kernel_size, sigma)
-        else:
-            self.blur = None
-        #self.blur = GaussianBlur(4)
+        self.sigma = sigma
+        self.blur = blur
+        self.normalize = normalize
 
     def compute_anomaly_map(
         self,
         patch_scores: torch.Tensor,
         image_size: tuple[int, int] | torch.Size | None = None,
     ) -> torch.Tensor:
-        """Pixel Level Anomaly Heatmap.
-
-        Args:
-            patch_scores (torch.Tensor): Patch-level anomaly scores
-            image_size (tuple[int, int] | torch.Size, optional): Size of the input image.
-                The anomaly map is upsampled to this dimension.
-                Defaults to None.
-
-        Returns:
-            Tensor: Map of the pixel-level anomaly scores
-        """
-        if image_size is None:
-            anomaly_map = patch_scores
-        else:
-            anomaly_map = F.interpolate(patch_scores, size=(image_size[0], image_size[1]), mode="bilinear", align_corners=False)
+        anomaly_map = patch_scores
+        if image_size is not None:
+            anomaly_map = F.interpolate(
+                patch_scores,
+                size=(image_size[0], image_size[1]),
+                mode="bilinear",
+                align_corners=False,
+            )
         if self.blur:
-            anomaly_map = self.blur(anomaly_map)
-        return AnomalyMapGenerator.rescale(anomaly_map)
+            anomaly_map = gaussian_smooth(anomaly_map, self.sigma)
+        if self.normalize:
+            anomaly_map = AnomalyMapGenerator.rescale(anomaly_map)
+        return anomaly_map
 
     def forward(
         self,
         patch_scores: torch.Tensor,
         image_size: tuple[int, int] | torch.Size | None = None,
     ) -> torch.Tensor:
-        """Return anomaly_map and anomaly_score.
-
-        Args:
-            patch_scores (torch.Tensor): Patch-level anomaly scores
-            image_size (tuple[int, int] | torch.Size, optional): Size of the input image.
-                The anomaly map is upsampled to this dimension.
-                Defaults to None.
-
-        Example:
-            >>> anomaly_map_generator = AnomalyMapGenerator()
-            >>> map = anomaly_map_generator(patch_scores=patch_scores)
-
-        Returns:
-            Tensor: anomaly_map
-        """
         return self.compute_anomaly_map(patch_scores, image_size)
 
-    def rescale(x):
+    @staticmethod
+    def rescale(x: torch.Tensor) -> torch.Tensor:
         # A batch whose scores are all identical (e.g. a completely uniform
         # patch distance) makes max() - min() == 0, turning every value into
         # NaN and silently corrupting every metric computed downstream.

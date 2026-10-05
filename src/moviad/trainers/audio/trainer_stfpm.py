@@ -1,7 +1,6 @@
 from tqdm import * 
 import copy
 
-import wandb
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -142,9 +141,9 @@ class TrainerSTFPM:
                 wandb_log_dict[f"best_{translate_dict[metric]}"] = best_metrics[metric]
 
             if self.wandb:
-                wandb.log(
-                    wandb_log_dict
-                )
+                import wandb as wandb_sdk  # optional dependency, only needed when logging
+
+                wandb_sdk.log(wandb_log_dict)
 
         return best_metrics, best_model_state
 

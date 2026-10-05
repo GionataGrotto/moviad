@@ -4,7 +4,6 @@ import copy
 import torch
 from torch.optim import AdamW
 from tqdm import tqdm
-import wandb
 
 from moviad.models.audio.cfa.cfa import CFA
 from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
@@ -134,8 +133,8 @@ class TrainerCFA():
                 wandb_log_dict[f"best_{translate_dict[metric]}"] = best_metrics[metric]
 
             if self.wandb:
-                wandb.log(
-                    wandb_log_dict
-                )
+                import wandb as wandb_sdk  # optional dependency, only needed when logging
+
+                wandb_sdk.log(wandb_log_dict)
 
         return best_metrics, best_model_state

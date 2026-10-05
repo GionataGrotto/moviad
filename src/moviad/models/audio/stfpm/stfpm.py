@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from moviad.models.audio.audio_vad_model import AudioVADModel
+from moviad.models.audio.components.feature_ops import temporal_topk_scores
 from moviad.models.training_args import TrainingArgs
 from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 
@@ -103,7 +104,7 @@ class STFPM(AudioVADModel):
             # aggregate score map by element-wise product
             score_maps = score_maps * sm
 
-        tmp_scores = score_maps.squeeze(1).topk(5,dim=2).values.mean(dim=2)
+        tmp_scores = temporal_topk_scores(score_maps)
 
         anomaly_scores = torch.max(score_maps.view(score_maps.size(0), -1), dim=1)[0]
         return score_maps, anomaly_scores, tmp_scores

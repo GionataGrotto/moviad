@@ -1,16 +1,18 @@
 import os
-from random import sample
-from typing import Mapping, Union, Any, Dict, List, Tuple
+import warnings
+from typing import Any, Dict, List, Mapping, Tuple, Union
 
 import numpy as np
-from scipy.ndimage import gaussian_filter
-
 import torch
-from torch import nn
-from torch.nn import functional as F
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from moviad.models.audio.audio_vad_model import AudioVADModel
+from moviad.models.audio.components.feature_ops import (
+    fuse_feature_maps,
+    gaussian_smooth,
+    temporal_topk_scores,
+)
 from moviad.models.training_args import TrainingArgs
 from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 
@@ -46,9 +48,6 @@ EMBEDDING_SIZES = {
     "HTSAT-base": {
         # HTSAT's 4 Swin stages have 256, 512, 1024, 1024 channels (the last
         # stage has no further PatchMerging, so it keeps stage 2's width).
-        # Verified empirically against the real model: the values previously
-        # here were wrong and made PaDiM crash the moment it tried to fit,
-        # for both layer combinations.
         ("1", "2", "3"): (512 + 1024 + 1024, 225),
         ("0", "1", "2"): (256 + 512 + 1024, 225),
     },
@@ -64,6 +63,67 @@ def idx_to_layer_name(backbone_model_name, idx: Union[Tuple, List]):
         return idx
 
 
+class GaussianAccumulator:
+    """Streaming per-patch mean / covariance in float64.
+
+    Consumes ``(B, C, H, W)`` embedding batches and never holds more than one of
+    them. The sums are taken on data shifted by the first batch mean, which keeps
+    the single-pass covariance numerically stable, and the full-covariance update
+    is one in-place batched matmul per batch (no temporaries the size of the
+    covariance tensor).
+    """
+
+    def __init__(self, full_covariance: bool):
+        self.full_covariance = full_covariance
+        self.count = 0
+        self.grid = None
+        self.shift = None  # (P, C)
+        self.sum = None  # (P, C)
+        self.second_moment = None  # (P, C) or (P, C, C)
+
+    @torch.no_grad()
+    def update(self, embeddings: torch.Tensor) -> None:
+        batch, channels, height, width = embeddings.shape
+        if self.grid is not None and self.grid != (height, width):
+            raise ValueError(
+                f"PaDiM fits one Gaussian per time-frequency patch, but the embedding grid "
+                f"changed from {self.grid} to {(height, width)} during fitting. All training "
+                "clips must have the same duration."
+            )
+        x = embeddings.double().reshape(batch, channels, height * width).permute(2, 0, 1)  # (P, B, C)
+        if self.count == 0:
+            self.grid = (height, width)
+            self.shift = x.mean(dim=1)
+            self.sum = torch.zeros_like(self.shift)
+            shape = (x.shape[0], channels, channels) if self.full_covariance else self.shift.shape
+            self.second_moment = torch.zeros(shape, dtype=x.dtype, device=x.device)
+        x = x - self.shift.unsqueeze(1)
+        self.sum += x.sum(dim=1)
+        if self.full_covariance:
+            self.second_moment.baddbmm_(x.transpose(1, 2), x)
+        else:
+            self.second_moment += (x * x).sum(dim=1)
+        self.count += batch
+
+    def finalize(self, covariance_reg: float) -> Tuple[np.ndarray, np.ndarray]:
+        if self.count == 0:
+            raise RuntimeError("Cannot fit PaDiM on an empty dataset (or the accumulator was already finalized)")
+        shifted_mean = self.sum / self.count
+        mean = self.shift + shifted_mean
+        denominator = max(self.count - 1, 1)
+        covariance = self.second_moment
+        if self.full_covariance:
+            covariance -= self.count * shifted_mean.unsqueeze(2) * shifted_mean.unsqueeze(1)
+            covariance /= denominator
+            covariance.diagonal(dim1=1, dim2=2).add_(covariance_reg)
+            covariance = covariance.float().permute(1, 2, 0)  # (C, C, P)
+        else:
+            covariance = (covariance - self.count * shifted_mean * shifted_mean) / denominator + covariance_reg
+            covariance = covariance.float().transpose(0, 1)  # (C, P)
+        self.count, self.second_moment = 0, None  # finalize consumes the buffers (it works in place)
+        return mean.float().transpose(0, 1).cpu().numpy(), np.ascontiguousarray(covariance.cpu().numpy())
+
+
 class Padim(AudioVADModel):
 
     HYPERPARAMS = [
@@ -76,6 +136,7 @@ class Padim(AudioVADModel):
         "diag_cov",
         "covariance_reg",
         "layers_idxs",
+        "fit_grid",
     ]
 
     def __init__(
@@ -92,11 +153,13 @@ class Padim(AudioVADModel):
     ):
         """
         Args:
-            backbone_model_name: one of the following strings: 'wide_resnet50_2', 'mobilenet_v2'
-            save_path: path to save the model and the extracted features
-            class_name: one of the following strings: 'bottle', 'cable', 'capsule', 'carpet', 'grid', 'hazelnut',
-                'leather', 'metal_nut', 'pill', 'screw', 'tile', 'toothbrush', 'transistor', 'wood', 'zipper'
-            diag_cov: if True, keep only the diagonal elements of the covariance matrices
+            backbone_model_name: key of ``EMBEDDING_SIZES`` (e.g. 'Cnn14', 'HTSAT-base').
+            class_name: label of the machine / class, used in checkpoint paths.
+            layers_idxs: backbone layers whose feature maps are fused.
+            diag_cov: keep only the per-patch variances instead of full covariance matrices.
+            img_size: (height, width) the anomaly map is upsampled to; ``None`` keeps
+                the input spectrogram size (or the embedding grid for waveform inputs).
+            embedding_dim: size of the random channel subset (default from ``EMBEDDING_SIZES``).
         """
         super().__init__(
             feature_extractor=backbone_model,
@@ -106,203 +169,53 @@ class Padim(AudioVADModel):
         self.class_name = class_name
         self.diag_cov = diag_cov
         self.covariance_reg = float(covariance_reg)
-        # feature extractor backbone model
         self.backbone_model_name = backbone_model_name
         self.layers_idxs = layers_idxs
         self.backbone_model = self.load_backbone(backbone_model)
         self.feature_extractor = self.backbone_model
-        # dimensionality reduction: random projection
+
+        # dimensionality reduction: random channel subset
         _, max_embedding_dim = self.lookup_embedding_size(backbone_model_name, layers_idxs)
         self.d = int(max_embedding_dim if embedding_dim is None else embedding_dim)
         if not 1 <= self.d <= self.t_d:
-            raise ValueError(
-                f"embedding_dim must be between 1 and {self.t_d}, got {self.d}"
-            )
-        random_dims = torch.tensor(sample(range(0, self.t_d), self.d), dtype=torch.long)
+            raise ValueError(f"embedding_dim must be between 1 and {self.t_d}, got {self.d}")
+        random_dims = torch.randperm(self.t_d)[: self.d]
         self.random_dimensions = torch.nn.Parameter(random_dims, requires_grad=False)
-        # training: learn the multivariate Gaussian distribution from the extracted features
-        self.train_outputs = None  # list of mean and covariance matrix numpy arrays
+
+        self.img_size = img_size
+        self._warned_grid_mismatch = False
+        self.fit_grid = None
+        self._gauss_mean = None
+        self._gauss_cov = None
+        self._inference_cache = {}
+
+    # ------------------------------------------------------- fitted state
+    @property
+    def gauss_mean(self):
+        return self._gauss_mean
+
+    @gauss_mean.setter
+    def gauss_mean(self, value):
+        self._gauss_mean = value
+        self._inference_cache = {}
+
+    @property
+    def gauss_cov(self):
+        return self._gauss_cov
+
+    @gauss_cov.setter
+    def gauss_cov(self, value):
+        self._gauss_cov = value
+        self._inference_cache = {}
+
+    def reset_model(self):
         self.gauss_mean = None
         self.gauss_cov = None
-        self.img_size = img_size
+        self.fit_grid = None
 
-    def train_epoch(
-        self,
-        epoch,
-        train_dataloader,
-        training_args: TrainingArgs,
-    ):
-        self.train()
-        layer_outputs: dict[str, list[torch.Tensor]] = {
-            layer: [] for layer in self.layers_idxs
-        }
-
-        for batch in tqdm(train_dataloader, "| feature extraction | train | audio padim |"):
-            outputs = self(self.batch_input(batch).to(self.device))
-            assert isinstance(outputs, dict)
-            for layer, output in outputs.items():
-                layer_outputs[layer].extend(output)
-
-        embedding_vectors = self.raw_feature_maps_to_embeddings(layer_outputs)
-        self.fit_multivariate_gaussian(embedding_vectors, update_params=True)
-        return 0.0
-
-    def train_step(self, batch: torch.Tensor, training_args: TrainingArgs):
-        raise NotImplementedError("Audio PaDiM is fitted with train_epoch, not train_step")
-
-    @staticmethod
-    def embedding_concat(x, y):
-        """Concatenate two feature maps, replicating ``y`` over ``x``'s grid.
-
-        The previous unfold/fold implementation assumed ``H1`` to be an exact
-        multiple of ``H2``. Audio feature maps do not satisfy that: the time
-        axis follows the clip length, so ratios such as 69/34 occur regularly
-        and left the trailing time frames of the output filled with zeros.
-        Nearest-neighbour upsampling replicates every low resolution patch over
-        its block exactly like the fold did, and is bit-identical to the old
-        code whenever the ratio is an exact integer, while also covering the
-        remainder rows.
-        """
-        if x.shape[0] != y.shape[0]:
-            raise ValueError(
-                f"Batch size mismatch between feature maps: {x.shape[0]} and {y.shape[0]}"
-            )
-        y = F.interpolate(y, size=x.shape[-2:], mode="nearest")
-        return torch.cat((x, y), dim=1)
-
-    def raw_feature_maps_to_embeddings(
-        self, layer_outputs: Dict[str, List[torch.Tensor]]
-    ):
-        """
-        Given a dict of lists of outputs of the layers, concatenate the feature maps and
-        eventually reduce the dimensionality to return the embedding vectors.
-
-        - embedding vector shape: (B, C, H, W)
-        - B = number of samples in the train set
-        - C = number of "channels", or number of feature maps --> may be reduced by dim. reduction
-        - H, W = height and width of the feature maps
-        """
-        # concatenate the outputs of the different dataloader batches
-        try:
-            output_tensors: dict[str, torch.Tensor] = {
-                layer: torch.cat(outputs, 0) for layer, outputs in layer_outputs.items()
-            }
-        except RuntimeError as error:
-            raise RuntimeError(
-                "PaDiM could not stack the extracted feature maps. This happens "
-                "when the training clips do not all have the same duration: PaDiM "
-                "fits one Gaussian per time-frequency patch, so every clip must "
-                "produce a feature map of the same size. Crop or pad the clips to "
-                "a fixed duration before training."
-            ) from error
-        # concatenate the feature maps to get the raw embedding vectors
-        embedding_vectors: torch.Tensor = output_tensors[self.layers_idxs[0]]
-        for layer in self.layers_idxs[1:]:
-            embedding_vectors = Padim.embedding_concat(
-                embedding_vectors, output_tensors[layer]
-            )
-        # dimensionality reduction: select the random dimensions to reduce the embedding vectors
-        assert embedding_vectors.size(1) == self.t_d, f"wront embedding size {self.t_d}, true one is: {embedding_vectors.size(1)}"
-        random_dimensions = self.random_dimensions.to(embedding_vectors.device)
-        embedding_vectors = torch.index_select(
-            embedding_vectors, 1, random_dimensions
-        )
-        return embedding_vectors
-
-    def forward(self, x):
-        # 1. extract feature maps and get the raw layer outputs (conv. feature maps)
-        layer_outputs: dict[str, list[torch.Tensor]] = {
-            layer: [] for layer in self.layers_idxs
-        }
-        # forward through the net to get the intermediate outputs with the hooks
-        with torch.no_grad():
-            # _ = self.backbone(x)
-            _ = self.backbone(x)
-        # get intermediate layer outputs
-        for layer, output in zip(self.layers_idxs, self.outputs):  # new
-            layer_outputs[layer].append(output.cpu().detach())  # new
-        # initialize hook outputs
-        self.outputs = []
-
-        if self.training:
-            return layer_outputs
-
-        # ---- EVAL INFERENCE ----
-        # 2. use the feature maps to get the embeddings
-        embedding_vectors = self.raw_feature_maps_to_embeddings(layer_outputs)
-        # 3. compute the distance matrix
-        dist_list = self.compute_distances(embedding_vectors)
-        # 4. upsample to the spectrogram resolution.  ``x`` is a waveform of
-        # shape [B, samples] on the benchmark loaders, so its spatial size
-        # cannot be read off dimension 2 the way the visual PaDiM does.
-        output_size = self.resolve_output_size(x, dist_list)
-        score_map = F.interpolate(
-            dist_list.unsqueeze(1),
-            size=output_size,
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(1).cpu().numpy()
-        if score_map.ndim == 2:
-            score_map = score_map[None, ...]
-        # 5. apply gaussian smoothing on the score map.  Smooth the batch in
-        # one call to avoid a Python loop over every test sample.
-        score_map = gaussian_filter(score_map, sigma=(0, 4, 4))
-
-        # 6. follow the audio contract shared with PatchCore, CFA, STFPM and
-        # the spectrogram adapters: torch tensors, and a per time frame score
-        # obtained by averaging the top-k frequency responses.
-        anomaly_maps = torch.from_numpy(score_map).unsqueeze(1)
-        anomaly_scores = anomaly_maps.flatten(start_dim=1).amax(dim=1)
-        map_without_channel = anomaly_maps.squeeze(1)
-        top_k = min(5, map_without_channel.shape[2])
-        tmp_scores = map_without_channel.topk(top_k, dim=2).values.mean(dim=2)
-        return anomaly_maps, anomaly_scores, tmp_scores
-
-    def resolve_output_size(self, x, dist_list):
-        """Spatial size the anomaly map must be reported at."""
-        if self.img_size is not None:
-            return tuple(int(value) for value in self.img_size)
-        if x.ndim == 4:
-            # caller already passed a spectrogram / feature map
-            return tuple(int(value) for value in x.shape[-2:])
-        # waveform input without a declared size: keep the embedding grid
-        return tuple(int(value) for value in dist_list.shape[-2:])
-
-    def fit_multivariate_gaussian(self, embedding_vectors, update_params):
-        """
-        Fit a multivariate Gaussian distribution to the set of given embedding vectors.
-
-        Returns:
-            List of mean and covariance matrix numpy arrays
-        """
-        B, C, H, W = embedding_vectors.size()
-
-        embedding_vectors = embedding_vectors.view(B, C, H * W).float().cpu()
-        mean_t = embedding_vectors.mean(dim=0)
-        mean = mean_t.numpy()
-
-        if self.diag_cov:
-            # A diagonal Gaussian avoids H*W dense matrix inversions.  Keep
-            # only C variances per patch instead of C*C covariance entries.
-            cov = embedding_vectors.var(dim=0, unbiased=B > 1).numpy()
-            cov += self.covariance_reg
-        else:
-            centered = embedding_vectors - mean_t.unsqueeze(0)
-            denominator = max(B - 1, 1)
-            cov = torch.einsum("bcp,bdp->cdp", centered, centered).numpy()
-            cov /= denominator
-            cov += self.covariance_reg * np.eye(C, dtype=cov.dtype)[:, :, None]
-        if update_params:
-            self.gauss_mean, self.gauss_cov = mean, cov
-        return mean, cov
-
+    # ------------------------------------------------------------ backbone
     def load_backbone(self, backbone_model):
-        """
-        Load the backbone model
-
-        Args:
-            backbone_model_name: one of the following strings: 'wide_resnet50_2', 'mobilenet_v2'
-        """
+        """Create the frozen audio backbone if needed and look up the channel counts."""
         if backbone_model is None:
             backbone_model = AudioFeatureExtractor(
                 model_name=self.backbone_model_name,
@@ -310,17 +223,7 @@ class Padim(AudioVADModel):
                 device=self.device,
                 frozen=True,
             )
-
-        # define the backbone behavior
-        def backbone_forward(x):
-            self.outputs = backbone_model(x)
-
-        self.backbone = backbone_forward
-
-        # save the true and random projection dimensions
-        self.t_d, default_d = self.lookup_embedding_size(
-            self.backbone_model_name, self.layers_idxs
-        )
+        self.t_d, default_d = self.lookup_embedding_size(self.backbone_model_name, self.layers_idxs)
         if not hasattr(self, "d"):
             self.d = default_d
         return backbone_model
@@ -343,6 +246,162 @@ class Padim(AudioVADModel):
             )
         return known_layers[key]
 
+    def _extract(self, x: torch.Tensor) -> List[torch.Tensor]:
+        """Feature maps of the configured layers, one tensor per layer."""
+        with torch.no_grad():
+            maps = self.backbone_model(x.to(self.device))
+        maps = list(maps.values()) if isinstance(maps, dict) else list(maps)
+        if len(maps) != len(self.layers_idxs):
+            raise ValueError(
+                f"The backbone returned {len(maps)} feature maps but PaDiM is configured "
+                f"with {len(self.layers_idxs)} layers {tuple(self.layers_idxs)}"
+            )
+        return maps
+
+    # ---------------------------------------------------------- embeddings
+    @staticmethod
+    def embedding_concat(x, y):
+        """Concatenate two feature maps, replicating the coarser one over the finer grid."""
+        return fuse_feature_maps([x, y])
+
+    def _project(self, fused: torch.Tensor) -> torch.Tensor:
+        if fused.size(1) != self.t_d:
+            raise ValueError(
+                f"Expected {self.t_d} channels from layers {tuple(self.layers_idxs)} of "
+                f"{self.backbone_model_name!r}, the backbone produced {fused.size(1)}"
+            )
+        return torch.index_select(fused, 1, self.random_dimensions.to(fused.device))
+
+    def embed(self, x: torch.Tensor) -> torch.Tensor:
+        """``(B, d, H, W)`` projected embedding of a batch, kept on the model device."""
+        return self._project(fuse_feature_maps(self._extract(x)))
+
+    def raw_feature_maps_to_embeddings(self, layer_outputs: Dict[str, List[torch.Tensor]]):
+        """Embedding of already extracted ``{layer: [batch tensors]}`` feature maps."""
+        try:
+            maps = [torch.cat(layer_outputs[layer], 0) for layer in self.layers_idxs]
+        except RuntimeError as error:
+            raise RuntimeError(
+                "PaDiM could not stack the extracted feature maps: the clips do not all "
+                "have the same duration. PaDiM fits one Gaussian per time-frequency patch, "
+                "so crop or pad the clips to a fixed duration."
+            ) from error
+        return self._project(fuse_feature_maps(maps))
+
+    # ----------------------------------------------------------------- fit
+    def fit(self, train_dataloader, progress: bool = True) -> None:
+        """Fit the per-patch Gaussians in one streaming pass, one batch in memory at a time."""
+        accumulator = GaussianAccumulator(full_covariance=not self.diag_cov)
+        batches = tqdm(train_dataloader, f"| PaDiM fit | {self.class_name} |") if progress else train_dataloader
+        for batch in batches:
+            accumulator.update(self.embed(self.batch_input(batch)))
+        self._store_gaussian(accumulator)
+
+    def fit_multivariate_gaussian(self, embedding_vectors, update_params):
+        """Fit the Gaussians on an in-memory ``(B, C, H, W)`` embedding tensor."""
+        accumulator = GaussianAccumulator(full_covariance=not self.diag_cov)
+        accumulator.update(embedding_vectors)
+        if update_params:
+            self._store_gaussian(accumulator)
+            return self.gauss_mean, self.gauss_cov
+        return accumulator.finalize(self.covariance_reg)
+
+    def _store_gaussian(self, accumulator: GaussianAccumulator) -> None:
+        mean, covariance = accumulator.finalize(self.covariance_reg)
+        self.fit_grid = accumulator.grid
+        self.gauss_mean, self.gauss_cov = mean, covariance
+
+    def train_epoch(self, epoch, train_dataloader, training_args: TrainingArgs):
+        self.fit(train_dataloader)
+        return 0.0
+
+    def train_step(self, batch: torch.Tensor, training_args: TrainingArgs):
+        raise NotImplementedError("Audio PaDiM is fitted with fit/train_epoch, not train_step")
+
+    # ------------------------------------------------------------- inference
+    def _fitted_statistics(self, device: torch.device):
+        """Means and (pre-inverted) covariances as tensors on ``device``, built once."""
+        if self.gauss_mean is None or self.gauss_cov is None:
+            raise RuntimeError("The model must be trained before computing distances.")
+        if device not in self._inference_cache:
+            mean = torch.from_numpy(np.ascontiguousarray(self.gauss_mean)).to(device)
+            covariance = torch.from_numpy(np.ascontiguousarray(self.gauss_cov)).to(device)
+            if covariance.ndim == 2:
+                precision = 1.0 / covariance.clamp_min(1e-12)  # (C, P)
+            else:
+                # (C, C, P) -> (P, C, C), inverted once in float64 instead of on every batch
+                precision = torch.linalg.inv(covariance.permute(2, 0, 1).double()).float()
+            self._inference_cache[device] = (mean, precision)
+        return self._inference_cache[device]
+
+    def compute_distances(self, embedding_vectors: torch.Tensor) -> torch.Tensor:
+        """Per-patch Mahalanobis distance, ``(B, H0, W0)`` on the embedding device.
+
+        If the test clips have another duration than the training ones the embedding
+        is resized to the training grid (with a warning) instead of crashing, because
+        PaDiM stores one Gaussian per patch.
+        """
+        mean, precision = self._fitted_statistics(embedding_vectors.device)
+        batch, channels, height, width = embedding_vectors.shape
+        fitted_patches = mean.shape[1]
+        fit_grid = tuple(self.fit_grid) if self.fit_grid is not None else None
+        if fit_grid is not None and fit_grid[0] * fit_grid[1] != fitted_patches:
+            raise ValueError(
+                f"Inconsistent PaDiM state: grid {fit_grid} does not match {fitted_patches} fitted patches"
+            )
+        grid_matches = (height, width) == fit_grid if fit_grid is not None else height * width == fitted_patches
+        if not grid_matches:
+            if fit_grid is None:
+                raise ValueError(
+                    f"PaDiM was fitted on {fitted_patches} time-frequency patches but received "
+                    f"{height * width} ({height}x{width}); the fitted grid is unknown."
+                )
+            if not self._warned_grid_mismatch:
+                warnings.warn(
+                    f"PaDiM was fitted on a {tuple(self.fit_grid)} grid but received {height}x{width}: "
+                    "resizing the embedding to the training grid. Use clips of the training "
+                    "duration for exact scores.",
+                    stacklevel=2,
+                )
+                self._warned_grid_mismatch = True
+            embedding_vectors = F.interpolate(
+                embedding_vectors, size=tuple(self.fit_grid), mode="bilinear", align_corners=False
+            )
+            height, width = self.fit_grid
+
+        delta = embedding_vectors.reshape(batch, channels, -1).float() - mean.unsqueeze(0)
+        if precision.ndim == 2:
+            squared = (delta * delta * precision.unsqueeze(0)).sum(dim=1)
+        else:
+            transformed = torch.einsum("bcp,pcd->bpd", delta, precision)
+            squared = (transformed * delta.transpose(1, 2)).sum(dim=2)
+        return squared.clamp_min(0).sqrt().reshape(batch, height, width)
+
+    def forward(self, x):
+        if self.training:
+            # raw feature maps, kept for the legacy two-step fit (extract -> embed -> fit)
+            return {layer: [maps.cpu()] for layer, maps in zip(self.layers_idxs, self._extract(x))}
+
+        distances = self.compute_distances(self.embed(x))
+        output_size = self.resolve_output_size(x, distances)
+        score_map = F.interpolate(
+            distances.unsqueeze(1), size=output_size, mode="bilinear", align_corners=False
+        )
+        anomaly_maps = gaussian_smooth(score_map, sigma=4)
+        anomaly_scores = anomaly_maps.flatten(start_dim=1).amax(dim=1)
+        return anomaly_maps, anomaly_scores, temporal_topk_scores(anomaly_maps)
+
+    def resolve_output_size(self, x, dist_list):
+        """Spatial size the anomaly map must be reported at."""
+        if self.img_size is not None:
+            return tuple(int(value) for value in self.img_size)
+        if x.ndim == 4:
+            # caller already passed a spectrogram / feature map
+            return tuple(int(value) for value in x.shape[-2:])
+        # waveform input without a declared size: keep the embedding grid
+        return tuple(int(value) for value in dist_list.shape[-2:])
+
+    # ----------------------------------------------------------- persistence
     def get_model_savepath(self, save_path):
         return os.path.join(
             save_path,
@@ -352,59 +411,14 @@ class Padim(AudioVADModel):
 
     def state_dict(self, *args, **kwargs):
         state_dict = super().state_dict(*args, **kwargs)
-        # add all the hyperparameters to the state dict
         for p in self.HYPERPARAMS:
             state_dict[p] = getattr(self, p)
         return state_dict
 
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
-        # load the hyperparameters
         for p in self.HYPERPARAMS:
             if p in state_dict:
                 setattr(self, p, state_dict[p])
-        # load the backbone models
         self.load_backbone(self.backbone_model)
-        # remove the hyperparameters from the state dict
         state_dict = {k: v for k, v in state_dict.items() if k not in self.HYPERPARAMS}
         return super().load_state_dict(state_dict, strict=strict)
-
-    def compute_distances(self, embedding_vectors: torch.Tensor):
-        """Compute Mahalanobis distances for all patches in one vectorized pass."""
-        batch_size, channels, height, width = embedding_vectors.size()
-        patch_count = height * width
-        embeddings = embedding_vectors.view(batch_size, channels, patch_count).cpu().numpy()
-        embeddings = np.moveaxis(embeddings, 1, 2)  # (batch, patch, channel)
-
-        if self.gauss_mean is None or self.gauss_cov is None:
-            raise RuntimeError("The model must be trained before computing distances.")
-
-        fitted_patches = self.gauss_mean.shape[1]
-        if patch_count != fitted_patches:
-            raise ValueError(
-                f"PaDiM was fitted on {fitted_patches} time-frequency patches but "
-                f"received {patch_count} ({height}x{width}). The test clips must "
-                "have the same duration as the training clips, because PaDiM "
-                "stores one Gaussian per patch."
-            )
-
-        means = np.moveaxis(self.gauss_mean, 1, 0)  # (patch, channel)
-        deltas = embeddings - means[None, :, :]
-        if self.diag_cov or self.gauss_cov.ndim == 2:
-            variances = np.moveaxis(self.gauss_cov, 1, 0)
-            squared_distances = np.sum(
-                (deltas * deltas) / np.maximum(variances[None, :, :], 1e-12),
-                axis=2,
-            )
-        else:
-            covariances = np.moveaxis(self.gauss_cov, 2, 0)  # (patch, channel, channel)
-            covariance_inverses = np.linalg.inv(covariances)
-            squared_distances = np.einsum(
-                "bpc,pcd,bpd->bp", deltas, covariance_inverses, deltas
-            )
-        distances = np.sqrt(np.maximum(squared_distances, 0.0))
-        return torch.from_numpy(distances.reshape(batch_size, height, width))
-
-    def reset_model(self):
-        self.train_outputs = None
-        self.gauss_mean = None
-        self.gauss_cov = None

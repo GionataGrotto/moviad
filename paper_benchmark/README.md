@@ -377,9 +377,11 @@ differenze usare un nuovo run o `--force-ssl-pretrain`.
 - Se il PC non ha GPU, usa `device: "cpu"` o `device: "auto"`, ma il run completo sara' lento.
 - Se vuoi provare un solo modello, usa `--methods patchcore`, oppure `--methods padim`, ecc.
 - Per dimezzare il training set e ridurre la memoria usata da PatchCore e PaDiM, aggiungi `--subset`. Puoi anche indicare una frazione, per esempio `--subset 0.25`. Il test set resta completo.
-- PaDiM usa già di default il training streaming; per PatchCore puoi aggiungere `--streaming` insieme a `--methods patchcore` per usare un reservoir bounded.
+- PaDiM e PatchCore fanno il fit sempre a memoria limitata (un batch alla volta): PaDiM accumula media/covarianza in un solo passaggio, PatchCore riduce ogni batch con k-center-greedy e poi riduce il pool al `memory_bank_size`. `--streaming`/`padim_streaming` sono accettati ma non hanno più effetto. `force_cpu_coreset: true` esegue la selezione del coreset su CPU (utile se la GPU è piena).
 - Se vuoi ridurre il benchmark, modifica in config `categories`, `snrs`, `seeds` o `background_categories`.
-- PaDiM usa di default covarianza diagonale e training streaming per ridurre il
-  costo CPU/RAM. Per riprodurre la variante precedente imposta
-  `padim_diag_cov: false` e `padim_streaming: false`.
+- PaDiM usa di default covarianza diagonale per ridurre il costo CPU/RAM. Per la
+  covarianza completa imposta `padim_diag_cov: false`.
+- Se i clip di test hanno una durata diversa da quelli di training, PaDiM
+  ridimensiona l'embedding alla griglia di training emettendo un warning (invece di
+  fallire): per punteggi esatti usa clip della stessa durata.
 - I file `config.local.json`, CSV e report generati sono locali: di norma non serve committarli.
