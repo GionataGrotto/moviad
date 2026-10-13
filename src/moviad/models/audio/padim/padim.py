@@ -54,6 +54,19 @@ EMBEDDING_SIZES = {
 }
 
 
+#: Output channels of every Cnn14 conv block, so any subset of blocks is supported.
+CNN14_BLOCK_CHANNELS = {
+    "conv_block1": 64,
+    "conv_block2": 128,
+    "conv_block3": 256,
+    "conv_block4": 512,
+    "conv_block5": 1024,
+    "conv_block6": 2048,
+}
+#: PaDiM keeps this fraction of the concatenated channels (225 of 896, the default setting).
+CNN14_DEFAULT_PROJECTION_RATIO = 225 / 896
+
+
 def idx_to_layer_name(backbone_model_name, idx: Union[Tuple, List]):
     if backbone_model_name in ["wide_resnet50_2"]:
         return tuple(f"layer{i}" for i in idx)
@@ -238,6 +251,11 @@ class Padim(AudioVADModel):
             )
         known_layers = EMBEDDING_SIZES[backbone_model_name]
         key = tuple(layers_idxs)
+        if key not in known_layers and backbone_model_name == "Cnn14" and all(
+            layer in CNN14_BLOCK_CHANNELS for layer in key
+        ):
+            total = sum(CNN14_BLOCK_CHANNELS[layer] for layer in key)
+            return total, max(1, round(total * CNN14_DEFAULT_PROJECTION_RATIO))
         if key not in known_layers:
             raise KeyError(
                 f"Unsupported layer combination {key} for backbone "

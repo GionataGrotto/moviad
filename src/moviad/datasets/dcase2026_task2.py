@@ -78,7 +78,7 @@ class DCASE2026Task2Dataset(Dataset):
         split: str,
         domain: str = "all",
         train_domains: str = "all",
-        channel: int = 0,
+        channel: int | str = 0,
         target_sample_rate: int = 44100,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
@@ -86,9 +86,11 @@ class DCASE2026Task2Dataset(Dataset):
         self.split = split.lower()
         self.domain = domain.lower()
         self.train_domains = train_domains.lower()
-        self.channel = int(channel)
-        if self.channel < 0:
-            raise ValueError("channel must be non-negative")
+        # "diff" feeds the near-minus-far waveform (channel 0 - channel 1), which cancels
+        # the noise that both microphones pick up.
+        self.channel = channel if channel == "diff" else int(channel)
+        if self.channel != "diff" and self.channel < 0:
+            raise ValueError("channel must be a non-negative index or 'diff'")
         self.target_sample_rate = int(target_sample_rate)
         self._resampler = torchaudio.transforms.Resample(16000, self.target_sample_rate)
         if self.split not in {"train", "test"}:
@@ -135,10 +137,17 @@ class DCASE2026Task2Dataset(Dataset):
     def __getitem__(self, index: int):
         record = self.records[index]
         waveform = self._load(record.path)
-        if waveform.ndim != 2 or self.channel >= waveform.shape[0]:
-            raise ValueError(f"Expected channel {self.channel} in stereo WAV: {record.path}")
-        # Baseline: near microphone only. Keep the waveform shape [samples].
-        waveform = waveform[self.channel]
+        if waveform.ndim != 2:
+            raise ValueError(f"Expected a [channels, samples] WAV: {record.path}")
+        if self.channel == "diff":
+            if waveform.shape[0] < 2:
+                raise ValueError(f"The 'diff' channel needs a stereo WAV: {record.path}")
+            waveform = waveform[0] - waveform[1]
+        else:
+            if self.channel >= waveform.shape[0]:
+                raise ValueError(f"Expected channel {self.channel} in stereo WAV: {record.path}")
+            # Baseline: near microphone only. Keep the waveform shape [samples].
+            waveform = waveform[self.channel]
         if self.target_sample_rate != 16000:
             waveform = self._resampler(waveform.unsqueeze(0)).squeeze(0)
         if self.split == "train":

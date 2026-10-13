@@ -281,6 +281,23 @@ python paper_benchmark/run_dcase2026_task2.py \
 Sono disponibili `max`, `mean` e `temporal_topk_mean`; per quest'ultima si può
 impostare il numero di valori con `--score-topk`.
 
+### Griglia di esperimenti sui metodi standard (DCASE)
+
+`run_dcase_grid.py` parte dalla baseline (Cnn14 `conv_block2-4`, microfono vicino, training solo source)
+e cambia un solo fattore per volta, sempre con test sui clip source: `layers_fine` (`conv_block1-3`),
+`layers_deep` (`conv_block3-5`), `train_all` (aggiunge i 10 clip target) e `near_minus_far`
+(canale 0 - canale 1). Ogni run e' isolato in `dcase2026_task2_evaluator/dev/grid_<nome>` e la tabella
+riassuntiva (AUC source media per esperimento e metodo) viene riscritta in
+`results/paper_benchmark/grid_summary.md` dopo ogni esperimento.
+
+```bash
+uv run python paper_benchmark/run_dcase_grid.py --base-config paper_benchmark/config.knn.json
+```
+
+Opzioni utili: `--methods patchcore padim`, `--experiments baseline layers_deep`, `--epochs 10`
+(CFA, STFPM, Dinomaly), `--dry-run` per vedere i comandi. I metodi senza layer (Dinomaly) saltano gli
+esperimenti sui layer. Il config di base serve per `dcase2026.dataset_path` e il device.
+
 ### kNN su embedding BEATs (DCASE)
 
 Metodo `knn`: embedding clip-level di un encoder pre-addestrato (media nel tempo del

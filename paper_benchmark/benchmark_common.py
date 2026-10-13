@@ -370,7 +370,10 @@ def make_model(
             diag_cov=bool(config.get("padim_diag_cov", True)),
             img_size=input_size,
             backbone_model=make_feature_extractor(config, device, frozen=True),
-            embedding_dim=int(config.get("padim_embedding_dim", 225)),
+            embedding_dim=min(
+                int(config.get("padim_embedding_dim", 225)),
+                Padim.lookup_embedding_size(config["backbone"], config["layers"])[0],
+            ),
             covariance_reg=float(config.get("padim_covariance_reg", 0.01)),
         )
         return model.to(device)

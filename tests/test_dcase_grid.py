@@ -1,0 +1,80 @@
+import json
+
+import numpy as np
+import pytest
+import torch
+import torchaudio
+
+from moviad.datasets.dcase2026_task2 import DCASE2026Task2Dataset
+from moviad.models.audio.padim.padim import Padim
+from paper_benchmark import run_dcase_grid as grid
+
+
+def test_every_experiment_changes_one_factor_and_fixes_the_test_protocol():
+    base = {"dcase2026": {"dataset_path": "/data", "channel": 0}}
+    baseline = grid.build_config(base, "baseline", 5)
+
+    assert baseline["dcase2026"]["train_domains"] == "source" and baseline["dcase2026"]["test_domain"] == "source"
+    assert baseline["layers"] == ["conv_block2", "conv_block3", "conv_block4"] and baseline["epochs"] == 5
+    assert grid.build_config(base, "layers_deep", 5)["layers"] == ["conv_block3", "conv_block4", "conv_block5"]
+    assert grid.build_config(base, "train_all", 5)["dcase2026"]["train_domains"] == "all"
+    assert grid.build_config(base, "near_minus_far", 5)["dcase2026"]["channel"] == "diff"
+    for name in grid.EXPERIMENTS:
+        config = grid.build_config(base, name, 5)
+        assert config["dcase2026"]["test_domain"] == "source"
+        assert config["dcase2026"]["run_name"] == f"grid_{name}"
+        assert config["dcase2026"]["dataset_path"] == "/data"  # untouched keys survive the merge
+    assert base["dcase2026"] == {"dataset_path": "/data", "channel": 0}  # the base config is not mutated
+
+
+def test_layer_experiments_skip_the_methods_that_have_no_layers():
+    assert grid.methods_for("layers_fine", ["patchcore", "dinomaly", "cfa"]) == ["patchcore", "cfa"]
+    assert grid.methods_for("baseline", ["patchcore", "dinomaly"]) == ["patchcore", "dinomaly"]
+
+
+def test_padim_accepts_any_cnn14_block_combination():
+    assert Padim.lookup_embedding_size("Cnn14", ("conv_block2", "conv_block3", "conv_block4")) == (896, 225)
+    total, default = Padim.lookup_embedding_size("Cnn14", ("conv_block1", "conv_block2", "conv_block3"))
+    assert total == 64 + 128 + 256 and 1 <= default <= total
+    assert Padim.lookup_embedding_size("Cnn14", ("conv_block3", "conv_block4", "conv_block5"))[0] == 1792
+    with pytest.raises(KeyError, match="Unsupported layer combination"):
+        Padim.lookup_embedding_size("Cnn14", ("conv_block9",))
+
+
+def write_clip(path, near, far):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torchaudio.save(str(path), torch.stack([near, far]), 16000)
+
+
+@pytest.mark.parametrize("channel", [0, 1, "diff"])
+def test_dcase_dataset_channel_selection(tmp_path, channel):
+    near = torch.linspace(-0.5, 0.5, 1600)
+    far = torch.full((1600,), 0.25)
+    write_clip(tmp_path / "fan" / "train" / "section_00_source_train_normal_0000.wav", near, far)
+
+    dataset = DCASE2026Task2Dataset(tmp_path, "fan", "train", channel=channel, target_sample_rate=16000)
+    waveform = dataset[0]
+
+    expected = {0: near, 1: far, "diff": near - far}[channel]
+    np.testing.assert_allclose(waveform.numpy(), expected.numpy(), atol=1e-3)
+
+
+def test_dcase_dataset_rejects_a_bad_channel(tmp_path):
+    with pytest.raises(ValueError, match="channel"):
+        DCASE2026Task2Dataset(tmp_path, "fan", "train", channel=-1)
+
+
+def test_dry_run_prints_one_command_per_experiment_without_running(tmp_path, monkeypatch, capsys):
+    base = tmp_path / "base.json"
+    base.write_text(json.dumps({"dcase2026": {"dataset_path": str(tmp_path)}}))
+    monkeypatch.setattr("sys.argv", ["run_dcase_grid.py", "--base-config", str(base), "--methods", "padim", "dinomaly",
+                                     "--experiments", "baseline", "layers_deep", "--dry-run"])
+    ran = []
+    monkeypatch.setattr(grid.subprocess, "run", lambda *a, **k: ran.append(a))
+
+    grid.main()
+
+    output = capsys.readouterr().out
+    assert not ran
+    assert output.count("run_dcase2026_task2.py") == 2
+    assert "--methods padim dinomaly" in output and "--methods padim\n" in output  # dinomaly skipped for layers_deep
