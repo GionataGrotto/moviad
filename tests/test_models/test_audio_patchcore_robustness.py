@@ -161,3 +161,30 @@ def test_blur_works_on_maps_smaller_than_the_smoothing_kernel():
 
     assert maps.shape == (2, 1, 8, 8) and torch.isfinite(maps).all()
     assert scores.shape == (2,) and temporal.shape == (2, 8)
+
+
+def test_nearest_neighbour_search_halves_its_chunk_when_the_gpu_is_full(monkeypatch):
+    model = make_model(num_neighbors=1)
+    model.fit(loader())
+    model.eval()
+    clips = torch.randn(3, 256)
+    reference = model(clips)
+
+    real = PatchCore.euclidean_distance
+    chunk_sizes = []
+
+    def flaky(x, y):
+        chunk_sizes.append(x.shape[0])
+        if x.shape[0] > 40:  # pretend only a small distance matrix fits
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory (simulated)")
+        return real(x, y)
+
+    monkeypatch.setattr(PatchCore, "euclidean_distance", staticmethod(flaky))
+    model.DISTANCE_CHUNK_ELEMENTS = model.memory_bank.shape[0] * 300  # starts with 300-row chunks
+
+    recovered = model(clips)
+
+    for expected, actual in zip(reference, recovered):
+        torch.testing.assert_close(actual, expected)
+    assert max(chunk_sizes) == 300 and chunk_sizes.count(300) == 1 and min(chunk_sizes[1:]) <= 40
+    assert model.DISTANCE_CHUNK_ELEMENTS <= model.memory_bank.shape[0] * 40  # the smaller chunk is remembered

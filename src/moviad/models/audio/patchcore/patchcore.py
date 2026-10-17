@@ -28,7 +28,7 @@ class PatchCore(AudioVADModel):
     """PatchCore with a memory-bounded fit and a memory-bounded nearest-neighbour search."""
 
     #: Upper bound on the size of one query-vs-memory-bank distance matrix.
-    DISTANCE_CHUNK_ELEMENTS = 2**26
+    DISTANCE_CHUNK_ELEMENTS = 2**24
 
     def __init__(
         self,
@@ -166,19 +166,31 @@ class PatchCore(AudioVADModel):
         """Distances and memory-bank indices of the nearest neighbours of each row.
 
         The query is processed in chunks so that the distance matrix never exceeds
-        ``DISTANCE_CHUNK_ELEMENTS`` entries, however many patches a batch has.
+        ``DISTANCE_CHUNK_ELEMENTS`` entries, however many patches a batch has. If the GPU is
+        shared and even that does not fit, the chunk is halved until it does.
         """
         bank = self.memory_bank
         rows = max(1, self.DISTANCE_CHUNK_ELEMENTS // max(bank.shape[0], 1))
         scores, locations = [], []
-        for chunk in embedding.split(rows):
-            distances = self.euclidean_distance(chunk, bank)
-            if n_neighbors == 1:
-                score, location = distances.min(dim=1)
-            else:
-                score, location = distances.topk(k=n_neighbors, largest=False, dim=1)
+        start = 0
+        while start < embedding.shape[0]:
+            try:
+                distances = self.euclidean_distance(embedding[start : start + rows], bank)
+                if n_neighbors == 1:
+                    score, location = distances.min(dim=1)
+                else:
+                    score, location = distances.topk(k=n_neighbors, largest=False, dim=1)
+            except torch.cuda.OutOfMemoryError:
+                if rows == 1:
+                    raise
+                distances = None
+                torch.cuda.empty_cache()
+                rows = max(1, rows // 2)
+                self.DISTANCE_CHUNK_ELEMENTS = rows * max(bank.shape[0], 1)  # remember for the next calls
+                continue
             scores.append(score)
             locations.append(location)
+            start += rows
         return torch.cat(scores), torch.cat(locations)
 
     def compute_anomaly_score(self, patch_scores: Tensor, locations: Tensor, embedding: Tensor) -> Tensor:
