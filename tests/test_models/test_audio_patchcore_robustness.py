@@ -188,3 +188,41 @@ def test_nearest_neighbour_search_halves_its_chunk_when_the_gpu_is_full(monkeypa
         torch.testing.assert_close(actual, expected)
     assert max(chunk_sizes) == 300 and chunk_sizes.count(300) == 1 and min(chunk_sizes[1:]) <= 40
     assert model.DISTANCE_CHUNK_ELEMENTS <= model.memory_bank.shape[0] * 40  # the smaller chunk is remembered
+
+
+def test_standardisation_whitens_the_channels_of_the_training_features():
+    model = make_model(standardize_features=True)
+    model.fit(loader())
+
+    features = torch.cat([model.embed(batch[0]) for batch in loader()])
+
+    channel_mean = features.mean(dim=(0, 2, 3))
+    channel_std = features.std(dim=(0, 2, 3))
+    torch.testing.assert_close(channel_mean, torch.zeros_like(channel_mean), atol=2e-2, rtol=0)
+    torch.testing.assert_close(channel_std, torch.ones_like(channel_std), atol=5e-2, rtol=0)
+    assert model.memory_bank.shape[1] == 12
+
+
+def test_standardisation_is_off_by_default_and_keeps_old_checkpoints_loadable():
+    plain = make_model()
+    plain.fit(loader())
+    assert plain.feature_mean.numel() == 0
+
+    legacy_state = {k: v for k, v in plain.state_dict().items() if k not in ("feature_mean", "feature_std")}
+    restored = make_model()
+    restored.load_state_dict(legacy_state)  # strict: must not complain about the new buffers
+    assert torch.equal(restored.memory_bank, plain.memory_bank)
+
+
+def test_standardised_model_round_trips_through_a_state_dict():
+    fitted = make_model(standardize_features=True)
+    fitted.fit(loader())
+    fitted.eval()
+
+    restored = make_model(standardize_features=True)
+    restored.load_state_dict(fitted.state_dict())
+    restored.eval()
+    clips = torch.randn(2, 256)
+
+    for expected, actual in zip(fitted(clips), restored(clips)):
+        torch.testing.assert_close(actual, expected)

@@ -27,6 +27,17 @@ def test_every_experiment_changes_one_factor_and_fixes_the_test_protocol():
     assert base["dcase2026"] == {"dataset_path": "/data", "channel": 0}  # the base config is not mutated
 
 
+def test_method_specific_experiments_and_epoch_overrides():
+    base = {"dcase2026": {"dataset_path": "/data"}}
+    assert grid.build_config(base, "baseline", 30)["epochs"] == 30
+    assert grid.build_config(base, "epochs_long", 30)["epochs"] == 100  # the experiment wins over --epochs
+    assert grid.build_config(base, "stfpm_random_student", 30)["stfpm_student_pretrained"] is False
+    assert grid.build_config(base, "patchcore_standardize", 30)["patchcore_standardize"] is True
+    assert grid.build_config(base, "dinomaly_base", 30)["dinomaly_encoder"].startswith("deit_base")
+    assert grid.methods_for("stfpm_random_student", ["patchcore", "stfpm"]) == ["stfpm"]
+    assert grid.methods_for("epochs_long", ["patchcore", "padim", "cfa", "stfpm", "dinomaly"]) == ["cfa", "stfpm", "dinomaly"]
+
+
 def test_layer_experiments_skip_the_methods_that_have_no_layers():
     assert grid.methods_for("layers_fine", ["patchcore", "dinomaly", "cfa"]) == ["patchcore", "cfa"]
     assert grid.methods_for("baseline", ["patchcore", "dinomaly"]) == ["patchcore", "dinomaly"]
@@ -78,3 +89,21 @@ def test_dry_run_prints_one_command_per_experiment_without_running(tmp_path, mon
     assert not ran
     assert output.count("run_dcase2026_task2.py") == 2
     assert "--methods padim dinomaly" in output and "--methods padim\n" in output  # dinomaly skipped for layers_deep
+
+
+def test_signal_feature_diagnostic_detects_a_louder_anomaly(tmp_path, capsys, monkeypatch):
+    from paper_benchmark import diagnose_signal_features as diagnose
+
+    torch.manual_seed(0)
+    for index in range(6):
+        for label, gain in (("normal", 0.1), ("anomaly", 0.4)):
+            clip = torch.randn(16000) * gain
+            write_clip(
+                tmp_path / "fan" / "test" / f"section_00_source_test_{label}_{index:04d}.wav", clip, clip
+            )
+    monkeypatch.setattr("sys.argv", ["diagnose_signal_features.py", "--dataset-path", str(tmp_path)])
+
+    diagnose.main()
+
+    row = [line for line in capsys.readouterr().out.splitlines() if line.startswith("fan")][0].split()
+    assert float(row[1]) == 1.0  # rms: every anomaly is louder than every normal clip

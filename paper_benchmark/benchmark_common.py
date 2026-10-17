@@ -46,6 +46,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "padim_embedding_dim": 225,
     "padim_covariance_reg": 0.01,
     "padim_streaming": True,
+    "patchcore_standardize": False,
+    "patchcore_num_neighbors": 9,
+    "stfpm_student_pretrained": True,
     "clap_checkpoint": None,
     "knn_beats_checkpoint": None,
     "knn_beats_code_dir": None,
@@ -277,7 +280,7 @@ def check_audio_checkpoint(
         )
 
 
-def make_feature_extractor(config: dict[str, Any], device: torch.device, frozen: bool = True):
+def make_feature_extractor(config: dict[str, Any], device: torch.device, frozen: bool = True, pretrained: bool | None = None):
     from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 
     return AudioFeatureExtractor(
@@ -285,7 +288,7 @@ def make_feature_extractor(config: dict[str, Any], device: torch.device, frozen:
         config["layers"],
         device,
         frozen=frozen,
-        pre_trained=config.get("pretrained", True),
+        pre_trained=config.get("pretrained", True) if pretrained is None else pretrained,
         checkpoint_path=config.get("clap_checkpoint"),
     )
 
@@ -337,8 +340,10 @@ def make_model(
             device=device,
             input_size=input_size,
             feature_extractor=feature_extractor,
+            num_neighbors=int(config.get("patchcore_num_neighbors", 9)),
             memory_bank_size=int(config["memory_bank_size"]),
             blur=True,
+            standardize_features=bool(config.get("patchcore_standardize", False)),
         ).to(device)
 
     if method == "knn":
@@ -394,7 +399,11 @@ def make_model(
         from moviad.models.audio.stfpm.stfpm import STFPM
 
         teacher = make_feature_extractor(config, device, frozen=True)
-        student = make_feature_extractor(config, device, frozen=False)
+        # The STFPM paper trains a randomly initialised student against the pretrained teacher;
+        # starting from the same weights makes the student already match the teacher everywhere.
+        student = make_feature_extractor(
+            config, device, frozen=False, pretrained=bool(config.get("stfpm_student_pretrained", True))
+        )
         return STFPM(teacher, student).to(device)
 
     if method == "dinomaly":

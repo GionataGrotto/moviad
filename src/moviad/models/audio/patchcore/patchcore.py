@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+from itertools import islice
 from typing import Union
 
 import torch
@@ -39,6 +40,7 @@ class PatchCore(AudioVADModel):
         memory_bank_size: int = 30000,
         blur: bool = True,
         normalize_maps: bool = False,
+        standardize_features: bool = False,
     ) -> None:
         """
         Args:
@@ -50,6 +52,9 @@ class PatchCore(AudioVADModel):
             blur: Gaussian smoothing of the anomaly map.
             normalize_maps: min-max normalise maps per batch. Leave off for any use
                 where scores of different batches are compared (see ``AnomalyMapGenerator``).
+            standardize_features: z-score every channel of the fused features with the mean and
+                standard deviation of the training set. Without it the layers with large
+                activations dominate the euclidean distances.
         """
         super().__init__(
             feature_extractor=feature_extractor,
@@ -64,7 +69,10 @@ class PatchCore(AudioVADModel):
         self.feature_pooler = torch.nn.AvgPool2d(kernel_size=3, stride=1, padding=1)
         self.anomaly_map_generator = AnomalyMapGenerator(blur=blur, normalize=normalize_maps)
 
+        self.standardize_features = standardize_features
         self.register_buffer("memory_bank", Tensor())
+        self.register_buffer("feature_mean", Tensor())
+        self.register_buffer("feature_std", Tensor())
         self.memory_bank: Tensor
 
     # ------------------------------------------------------------------ fit
@@ -96,6 +104,9 @@ class PatchCore(AudioVADModel):
         except TypeError:
             num_batches = None
 
+        if self.standardize_features:
+            self.fit_standardizer(train_dataloader)
+
         was_training = self.training
         self.train()
         try:
@@ -110,6 +121,23 @@ class PatchCore(AudioVADModel):
             self.train(was_training)
 
         self.memory_bank = coreset.result(selection_device).to(self.device)
+
+    @torch.no_grad()
+    def fit_standardizer(self, train_dataloader, max_batches: int = 16) -> None:
+        """Per-channel mean / std of the fused features over the first ``max_batches`` batches."""
+        self.feature_mean = Tensor()  # extract raw features, not yet standardised
+        total, square_total, count = 0.0, 0.0, 0
+        for batch in islice(train_dataloader, max_batches):
+            features = self.embed(self.batch_input(batch)).double()
+            total = total + features.sum(dim=(0, 2, 3))
+            square_total = square_total + (features * features).sum(dim=(0, 2, 3))
+            count += features.shape[0] * features.shape[2] * features.shape[3]
+        if count == 0:
+            raise RuntimeError("Cannot standardise the features of an empty dataset")
+        mean = total / count
+        std = (square_total / count - mean * mean).clamp_min(0).sqrt().clamp_min(1e-6)
+        self.feature_mean = mean.float().to(self.device)
+        self.feature_std = std.float().to(self.device)
 
     def train_epoch(self, epoch, train_dataloader, training_args: TrainingArgs):
         self.fit(train_dataloader, force_cpu=getattr(training_args, "force_cpu", False))
@@ -127,7 +155,10 @@ class PatchCore(AudioVADModel):
             features = list(features.values())
         features = [self.feature_pooler(feature) for feature in features]
         # TODO: audio positional encoding should only separate frequency bands, not time.
-        return fuse_feature_maps(features)
+        fused = fuse_feature_maps(features)
+        if self.standardize_features and self.feature_mean.numel():
+            fused = (fused - self.feature_mean.view(1, -1, 1, 1)) / self.feature_std.view(1, -1, 1, 1)
+        return fused
 
     def forward(self, input_tensor: Tensor) -> Tensor | tuple[Tensor, Tensor, Tensor]:
         """Patch embeddings in training mode, ``(anomaly_maps, scores, temporal_scores)`` in eval mode."""
@@ -218,12 +249,16 @@ class PatchCore(AudioVADModel):
     # ---------------------------------------------------------- persistence
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
         # The buffer is registered empty; a fitted checkpoint has another shape.
-        key = prefix + "memory_bank"
-        if key in state_dict and state_dict[key].shape != self.memory_bank.shape:
-            self.memory_bank = torch.empty_like(state_dict[key])
+        for name in ("memory_bank", "feature_mean", "feature_std"):
+            key = prefix + name
+            if key in state_dict and state_dict[key].shape != getattr(self, name).shape:
+                setattr(self, name, torch.empty_like(state_dict[key]))
         super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
         )
+        if not self.standardize_features:  # checkpoints from before the standardiser existed
+            optional = (prefix + "feature_mean", prefix + "feature_std")
+            missing_keys[:] = [key for key in missing_keys if key not in optional]
 
     def load_model(self, path):
         """Load a memory bank saved with ``save`` (or a bare ``{"memory_bank": tensor}`` dict)."""

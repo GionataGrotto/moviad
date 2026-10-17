@@ -5,10 +5,15 @@ microphone, training on source only) and keeps the test protocol fixed (source-d
 clips), so the mean source AUC of each row is directly comparable:
 
     baseline   conv_block2-4, channel 0, train on source
-    layers_fine   conv_block1-3        finer time-frequency grid
-    layers_deep   conv_block3-5        coarser grid, more abstract features
+    layers_fine / layers_deep   conv_block1-3 / conv_block3-5
     train_all     + the 10 target training clips (the official 990+10 protocol)
     near_minus_far   waveform = channel 0 - channel 1 (cancels the shared noise)
+    stfpm_random_student   student initialised at random, as in the STFPM paper
+    patchcore_standardize / patchcore_big_bank   z-scored channels / 60000-patch memory bank
+    padim_full_cov   full covariance instead of the diagonal one
+    cfa_fine_memory   gamma_c = 1 (no k-means reduction of the memory bank)
+    dinomaly_small / dinomaly_base   larger ViT encoders
+    epochs_long   100 epochs for cfa, stfpm and dinomaly
 
     python paper_benchmark/run_dcase_grid.py --base-config paper_benchmark/config.knn.json
     python paper_benchmark/run_dcase_grid.py --base-config ... --experiments baseline layers_deep --dry-run
@@ -35,13 +40,22 @@ from score_dcase_csv import evaluate_folder  # noqa: E402
 
 LAYERS_BLOCKS_2_4 = ["conv_block2", "conv_block3", "conv_block4"]
 
-#: name -> (description, config overrides, methods that must be skipped)
+LAYER_METHODS = {"patchcore", "padim", "cfa", "stfpm"}
+#: name -> (description, config overrides, methods the experiment applies to; None = all)
 EXPERIMENTS = {
-    "baseline": ("conv_block2-4, near mic, train source", {}, set()),
-    "layers_fine": ("conv_block1-3", {"layers": ["conv_block1", "conv_block2", "conv_block3"]}, {"dinomaly", "draem"}),
-    "layers_deep": ("conv_block3-5", {"layers": ["conv_block3", "conv_block4", "conv_block5"]}, {"dinomaly", "draem"}),
-    "train_all": ("train source + 10 target clips", {"dcase2026": {"train_domains": "all"}}, set()),
-    "near_minus_far": ("input = near - far", {"dcase2026": {"channel": "diff"}}, set()),
+    "baseline": ("conv_block2-4, near mic, train source", {}, None),
+    "layers_fine": ("conv_block1-3", {"layers": ["conv_block1", "conv_block2", "conv_block3"]}, LAYER_METHODS),
+    "layers_deep": ("conv_block3-5", {"layers": ["conv_block3", "conv_block4", "conv_block5"]}, LAYER_METHODS),
+    "train_all": ("train source + 10 target clips", {"dcase2026": {"train_domains": "all"}}, None),
+    "near_minus_far": ("input = near - far", {"dcase2026": {"channel": "diff"}}, None),
+    "stfpm_random_student": ("STFPM student at random init", {"stfpm_student_pretrained": False}, {"stfpm"}),
+    "patchcore_standardize": ("PatchCore z-scored channels", {"patchcore_standardize": True}, {"patchcore"}),
+    "patchcore_big_bank": ("PatchCore bank 60000", {"memory_bank_size": 60000}, {"patchcore"}),
+    "padim_full_cov": ("PaDiM full covariance", {"padim_diag_cov": False}, {"padim"}),
+    "cfa_fine_memory": ("CFA gamma_c=1", {"cfa_gamma_c": 1}, {"cfa"}),
+    "dinomaly_small": ("Dinomaly deit_small", {"dinomaly_encoder": "deit_small_patch16_224.fb_in1k"}, {"dinomaly"}),
+    "dinomaly_base": ("Dinomaly deit_base", {"dinomaly_encoder": "deit_base_patch16_224.fb_in1k"}, {"dinomaly"}),
+    "epochs_long": ("100 epochs", {"epochs": 100}, {"cfa", "stfpm", "dinomaly"}),
 }
 DEFAULT_METHODS = ["patchcore", "padim", "cfa", "stfpm", "dinomaly"]
 
@@ -59,18 +73,19 @@ def deep_merge(base: dict, override: dict) -> dict:
 def build_config(base: dict, name: str, epochs: int | None, aggregation: str = "temporal_topk_mean") -> dict:
     description, overrides, _ = EXPERIMENTS[name]
     config = deep_merge(base, {"backbone": "Cnn14", "layers": LAYERS_BLOCKS_2_4})
+    if epochs is not None:
+        config["epochs"] = epochs  # an experiment may override it below
     config = deep_merge(config, overrides)
     # the protocol is fixed: always evaluate on the source-domain test clips
     config["dcase2026"] = deep_merge(config.get("dcase2026", {}), {"test_domain": "source", "run_name": f"grid_{name}", "score_aggregation": aggregation})
     if name != "train_all":
         config["dcase2026"].setdefault("train_domains", "source")
-    if epochs is not None:
-        config["epochs"] = epochs
     return config
 
 
 def methods_for(name: str, methods: list[str]) -> list[str]:
-    return [m for m in methods if m not in EXPERIMENTS[name][2]]
+    only = EXPERIMENTS[name][2]
+    return [m for m in methods if only is None or m in only]
 
 
 def collect(experiments: list[str], methods: list[str], domain: str = "source") -> dict:

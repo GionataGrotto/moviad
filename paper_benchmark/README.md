@@ -284,11 +284,18 @@ impostare il numero di valori con `--score-topk`.
 ### Griglia di esperimenti sui metodi standard (DCASE)
 
 `run_dcase_grid.py` parte dalla baseline (Cnn14 `conv_block2-4`, microfono vicino, training solo source)
-e cambia un solo fattore per volta, sempre con test sui clip source: `layers_fine` (`conv_block1-3`),
-`layers_deep` (`conv_block3-5`), `train_all` (aggiunge i 10 clip target) e `near_minus_far`
-(canale 0 - canale 1). Ogni run e' isolato in `dcase2026_task2_evaluator/dev/grid_<nome>` e la tabella
-riassuntiva (AUC source media per esperimento e metodo) viene riscritta in
-`results/paper_benchmark/grid_summary.md` dopo ogni esperimento.
+e cambia un solo fattore per volta, sempre con test sui clip source. Esperimenti:
+`layers_fine` (`conv_block1-3`), `layers_deep` (`conv_block3-5`), `train_all` (aggiunge i 10 clip target),
+`near_minus_far` (canale 0 - canale 1), `stfpm_random_student` (studente a pesi casuali, come nel paper
+STFPM), `patchcore_standardize` (canali standardizzati), `patchcore_big_bank` (60000 patch),
+`padim_full_cov`, `cfa_fine_memory` (`gamma_c=1`), `dinomaly_small`, `dinomaly_base` ed `epochs_long`
+(100 epoche per CFA, STFPM e Dinomaly). Ogni esperimento gira solo sui metodi a cui si applica. Ogni run e'
+isolato in `dcase2026_task2_evaluator/dev/grid_<nome>` e la tabella riassuntiva (AUC source media per
+esperimento e metodo) viene riscritta in `results/paper_benchmark/grid_summary.md` dopo ogni esperimento.
+
+`diagnose_signal_features.py --dataset-path <DCASE>` calcola per macchina l'AUC di semplici statistiche
+del segnale (RMS, centroide spettrale, piattezza, quota di alte frequenze): serve a capire se un'inversione
+sistematica (AUC sotto 0,5) dipende dall'energia del clip.
 
 ```bash
 uv run python paper_benchmark/run_dcase_grid.py --base-config paper_benchmark/config.knn.json
