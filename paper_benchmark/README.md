@@ -289,7 +289,9 @@ e cambia un solo fattore per volta, sempre con test sui clip source. Esperimenti
 `near_minus_far` (canale 0 - canale 1), `stfpm_random_student` (studente a pesi casuali, come nel paper
 STFPM), `patchcore_standardize` (canali standardizzati), `patchcore_big_bank` (60000 patch),
 `padim_full_cov`, `cfa_fine_memory` (`gamma_c=1`), `dinomaly_small`, `dinomaly_base` ed `epochs_long`
-(100 epoche per CFA, STFPM e Dinomaly). Ogni esperimento gira solo sui metodi a cui si applica. Ogni run e'
+(100 epoche per CFA, STFPM e Dinomaly), `spec_band_norm` (log-mel standardizzato per banda mel con le
+statistiche del training), `spec_fill_dead_bands` (bande mel sopra 8 kHz, vuote a 16 kHz, sostituite con l'ultima
+banda viva), `spec_both` e `agg_mean` (punteggio = media della mappa invece del top-k). Ogni esperimento gira solo sui metodi a cui si applica. Ogni run e'
 isolato in `dcase2026_task2_evaluator/dev/grid_<nome>` e la tabella riassuntiva (AUC source media per
 esperimento e metodo) viene riscritta in `results/paper_benchmark/grid_summary.md` dopo ogni esperimento.
 

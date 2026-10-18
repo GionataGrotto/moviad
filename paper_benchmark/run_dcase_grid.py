@@ -9,6 +9,9 @@ clips), so the mean source AUC of each row is directly comparable:
     train_all     + the 10 target training clips (the official 990+10 protocol)
     near_minus_far   waveform = channel 0 - channel 1 (cancels the shared noise)
     stfpm_random_student   student initialised at random, as in the STFPM paper
+    spec_band_norm / spec_fill_dead_bands / spec_both   log-mel z-scored per band / bands above 8 kHz
+                 filled with the last live band / both
+    agg_mean     file score = mean of the anomaly map instead of the temporal top-k
     patchcore_standardize / patchcore_big_bank   z-scored channels / 60000-patch memory bank
     padim_full_cov   full covariance instead of the diagonal one
     cfa_fine_memory   gamma_c = 1 (no k-means reduction of the memory bank)
@@ -41,6 +44,7 @@ from score_dcase_csv import evaluate_folder  # noqa: E402
 LAYERS_BLOCKS_2_4 = ["conv_block2", "conv_block3", "conv_block4"]
 
 LAYER_METHODS = {"patchcore", "padim", "cfa", "stfpm"}
+SPECTROGRAM_METHODS = LAYER_METHODS | {"dinomaly"}
 #: name -> (description, config overrides, methods the experiment applies to; None = all)
 EXPERIMENTS = {
     "baseline": ("conv_block2-4, near mic, train source", {}, None),
@@ -56,6 +60,10 @@ EXPERIMENTS = {
     "dinomaly_small": ("Dinomaly deit_small", {"dinomaly_encoder": "deit_small_patch16_224.fb_in1k"}, {"dinomaly"}),
     "dinomaly_base": ("Dinomaly deit_base", {"dinomaly_encoder": "deit_base_patch16_224.fb_in1k"}, {"dinomaly"}),
     "epochs_long": ("100 epochs", {"epochs": 100}, {"cfa", "stfpm", "dinomaly"}),
+    "spec_band_norm": ("log-mel z-scored per band", {"spec_band_norm": "zscore"}, SPECTROGRAM_METHODS),
+    "spec_fill_dead_bands": ("mel bands above 8 kHz filled", {"spec_dead_band_hz": 8000}, SPECTROGRAM_METHODS),
+    "spec_both": ("band z-score + dead bands filled", {"spec_band_norm": "zscore", "spec_dead_band_hz": 8000}, SPECTROGRAM_METHODS),
+    "agg_mean": ("score = mean of the anomaly map", {"dcase2026": {"score_aggregation": "mean"}}, None),
 }
 DEFAULT_METHODS = ["patchcore", "padim", "cfa", "stfpm", "dinomaly"]
 
@@ -75,9 +83,10 @@ def build_config(base: dict, name: str, epochs: int | None, aggregation: str = "
     config = deep_merge(base, {"backbone": "Cnn14", "layers": LAYERS_BLOCKS_2_4})
     if epochs is not None:
         config["epochs"] = epochs  # an experiment may override it below
+    # the aggregation is a default an experiment may change; the test protocol is fixed
+    config["dcase2026"] = deep_merge(config.get("dcase2026", {}), {"score_aggregation": aggregation})
     config = deep_merge(config, overrides)
-    # the protocol is fixed: always evaluate on the source-domain test clips
-    config["dcase2026"] = deep_merge(config.get("dcase2026", {}), {"test_domain": "source", "run_name": f"grid_{name}", "score_aggregation": aggregation})
+    config["dcase2026"] = deep_merge(config["dcase2026"], {"test_domain": "source", "run_name": f"grid_{name}"})
     if name != "train_all":
         config["dcase2026"].setdefault("train_domains", "source")
     return config

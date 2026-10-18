@@ -46,6 +46,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "padim_embedding_dim": 225,
     "padim_covariance_reg": 0.01,
     "padim_streaming": True,
+    "spec_band_norm": "none",
+    "spec_dead_band_hz": None,
+    "spec_stats_batches": 50,
     "patchcore_standardize": False,
     "patchcore_num_neighbors": 9,
     "stfpm_student_pretrained": True,
@@ -447,10 +450,49 @@ def make_model(
     raise ValueError(f"Unsupported method: {method}")
 
 
+def _spectrogram_consumers(method: str, model) -> list:
+    """Objects of ``model`` that turn waveforms into log-mel spectrograms."""
+    method = method.lower()
+    if method in ("patchcore", "cfa"):
+        return [model.feature_extractor]
+    if method == "padim":
+        return [model.backbone_model]
+    if method == "stfpm":
+        return [model.teacher, model.student]
+    if method == "dinomaly":
+        return [model]
+    raise ValueError(f"Spectrogram preprocessing is not supported for method {method!r}")
+
+
+def attach_spectrogram_preprocessing(method: str, model, train_loader, config: dict[str, Any], device: torch.device) -> None:
+    """Fit and attach the optional band standardisation / dead-band filling (off by default)."""
+    band_norm = config.get("spec_band_norm", "none")
+    dead_hz = config.get("spec_dead_band_hz")
+    if band_norm == "none" and dead_hz is None:
+        return
+    from itertools import islice
+
+    from moviad.models.audio.audio_vad_model import AudioVADModel
+    from moviad.models.audio.components.spectrogram_preprocess import SpectrogramPreprocessor, first_band_above
+
+    n_mels, fmin, fmax = 64, 50, 14000  # the log-mel frontend of the Cnn14 / HTSAT backbones
+    dead_start = None if dead_hz is None else first_band_above(float(dead_hz), n_mels, fmin, fmax)
+    preprocessor = SpectrogramPreprocessor(n_mels, band_norm, dead_start).to(device)
+    if band_norm != "none":
+        transform = make_spectrogram_transform(config).to(device)
+        batches = islice(train_loader, int(config.get("spec_stats_batches", 50)))
+        with torch.no_grad():
+            preprocessor.fit(transform(AudioVADModel.batch_input(batch).to(device)) for batch in batches)
+    print(f"Spectrogram preprocessing: band_norm={band_norm}, dead bands from index {dead_start}", flush=True)
+    for consumer in _spectrogram_consumers(method, model):
+        consumer.set_spectrogram_preprocessor(preprocessor)
+
+
 def fit_model(method: str, model, train_loader, test_loader, config: dict[str, Any], device: torch.device, debug: bool, evaluate_during_training: bool = True) -> None:
     method = method.lower()
     max_batches = int(config.get("debug_max_batches", 2))
     train_iter = limited(train_loader, debug, max_batches)
+    attach_spectrogram_preprocessing(method, model, train_loader, config, device)
 
     if method == "patchcore":
         from moviad.trainers.audio.trainer_patchcore import TrainerPatchCore

@@ -91,6 +91,7 @@ class AudioFeatureExtractor(torch.nn.Module):
 
         super().__init__()
         self.frozen = frozen
+        self.spectro_preprocessor = None  # optional SpectrogramPreprocessor, see set_spectrogram_preprocessor
         self.model_name = model_name
         self.layers_idx = layers_idx
         self.device = device
@@ -386,8 +387,14 @@ class AudioFeatureExtractor(torch.nn.Module):
         batch = batch.to(self.device)
         batch = self.spectrogram_extractor(batch)
         batch = self.logmel_extractor(batch)
+        if self.spectro_preprocessor is not None:
+            batch = self.spectro_preprocessor(batch)
 
         return batch
+
+    def set_spectrogram_preprocessor(self, preprocessor) -> None:
+        """Apply ``preprocessor`` (band standardisation / dead-band filling) after the log-mel step."""
+        self.spectro_preprocessor = preprocessor.to(self.device)
 
     def _forward_htsat_single_window(self, spectrogram: torch.Tensor) -> list[torch.Tensor]:
         """Run one HTSAT-base forward pass on a spectrogram within its fixed window."""

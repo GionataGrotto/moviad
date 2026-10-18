@@ -44,6 +44,10 @@ class AudioDinomaly(Dinomaly):
         self.spectrogram_transform.eval()
         for parameter in self.spectrogram_transform.parameters():
             parameter.requires_grad = False
+        self.spectro_preprocessor = None  # optional SpectrogramPreprocessor
+
+    def set_spectrogram_preprocessor(self, preprocessor) -> None:
+        self.spectro_preprocessor = preprocessor.to(self.device)
 
     def to(self, device: torch.device | str):
         device = torch.device(device)
@@ -91,6 +95,9 @@ class AudioDinomaly(Dinomaly):
                 "The spectrogram frontend must return a 4D tensor, got "
                 f"shape {tuple(spectrogram.shape)}"
             )
+
+        if self.spectro_preprocessor is not None and batch.ndim != 4:
+            spectrogram = self.spectro_preprocessor(spectrogram)
 
         original_size = (int(spectrogram.shape[-2]), int(spectrogram.shape[-1]))
 

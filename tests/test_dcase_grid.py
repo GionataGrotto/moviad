@@ -34,6 +34,14 @@ def test_method_specific_experiments_and_epoch_overrides():
     assert grid.build_config(base, "stfpm_random_student", 30)["stfpm_student_pretrained"] is False
     assert grid.build_config(base, "patchcore_standardize", 30)["patchcore_standardize"] is True
     assert grid.build_config(base, "dinomaly_base", 30)["dinomaly_encoder"].startswith("deit_base")
+    assert grid.build_config(base, "agg_mean", 30)["dcase2026"]["score_aggregation"] == "mean"  # the experiment wins
+    assert grid.build_config(base, "baseline", 30)["dcase2026"]["score_aggregation"] == "temporal_topk_mean"
+    assert grid.build_config(base, "spec_band_norm", 30)["spec_band_norm"] == "zscore"
+    assert grid.build_config(base, "spec_fill_dead_bands", 30)["spec_dead_band_hz"] == 8000
+    both = grid.build_config(base, "spec_both", 30)
+    assert both["spec_band_norm"] == "zscore" and both["spec_dead_band_hz"] == 8000
+    assert grid.methods_for("spec_both", ["patchcore", "dinomaly", "draem"]) == ["patchcore", "dinomaly"]
+    assert grid.methods_for("agg_mean", ["patchcore", "dinomaly"]) == ["patchcore", "dinomaly"]
     assert grid.methods_for("stfpm_random_student", ["patchcore", "stfpm"]) == ["stfpm"]
     assert grid.methods_for("epochs_long", ["patchcore", "padim", "cfa", "stfpm", "dinomaly"]) == ["cfa", "stfpm", "dinomaly"]
 
