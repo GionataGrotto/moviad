@@ -43,6 +43,7 @@ EMBEDDING_SIZES = {
         ("features.10", "features.13", "features.16"): (320, 80),
         ("features.3", "features.8", "features.14"): (248, 62),
     },
+    "BEATs": {},  # any set of blocks 1..12, see lookup_embedding_size
     "wide_resnet50_2": {("layer1", "layer2", "layer3"): (1792, 550)},
     "Cnn14": {("conv_block2", "conv_block3", "conv_block4"): (896, 225)},
     "HTSAT-base": {
@@ -63,6 +64,9 @@ CNN14_BLOCK_CHANNELS = {
     "conv_block5": 1024,
     "conv_block6": 2048,
 }
+#: Channels of every BEATs-base transformer block (blocks are numbered from 1).
+BEATS_BLOCK_CHANNELS = 768
+BEATS_BLOCKS = 12
 #: PaDiM keeps this fraction of the concatenated channels (225 of 896, the default setting).
 CNN14_DEFAULT_PROJECTION_RATIO = 225 / 896
 
@@ -251,6 +255,11 @@ class Padim(AudioVADModel):
             )
         known_layers = EMBEDDING_SIZES[backbone_model_name]
         key = tuple(layers_idxs)
+        if backbone_model_name == "BEATs" and key and all(
+            isinstance(layer, int) and 1 <= layer <= BEATS_BLOCKS for layer in key
+        ):
+            total = BEATS_BLOCK_CHANNELS * len(key)
+            return total, max(1, round(total * CNN14_DEFAULT_PROJECTION_RATIO))
         if key not in known_layers and backbone_model_name == "Cnn14" and all(
             layer in CNN14_BLOCK_CHANNELS for layer in key
         ):

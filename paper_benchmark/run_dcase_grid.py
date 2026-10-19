@@ -11,6 +11,8 @@ clips), so the mean source AUC of each row is directly comparable:
     stfpm_random_student   student initialised at random, as in the STFPM paper
     spec_band_norm / spec_fill_dead_bands / spec_both   log-mel z-scored per band / bands above 8 kHz
                  filled with the last live band / both
+    beats_late / beats_mid   BEATs transformer blocks 8,10,12 / 4,6,8 as the backbone of patchcore, padim, cfa
+                 (needs beats_checkpoint / beats_code_dir, or the knn_beats_* keys, in the base config)
     agg_mean     file score = mean of the anomaly map instead of the temporal top-k
     patchcore_standardize / patchcore_big_bank   z-scored channels / 60000-patch memory bank
     padim_full_cov   full covariance instead of the diagonal one
@@ -45,6 +47,8 @@ LAYERS_BLOCKS_2_4 = ["conv_block2", "conv_block3", "conv_block4"]
 
 LAYER_METHODS = {"patchcore", "padim", "cfa", "stfpm"}
 SPECTROGRAM_METHODS = LAYER_METHODS | {"dinomaly"}
+# heads that run on feature maps; STFPM trains its student with an SGD setup made for CNNs, so it is left out
+BEATS_METHODS = {"patchcore", "padim", "cfa"}
 #: name -> (description, config overrides, methods the experiment applies to; None = all)
 EXPERIMENTS = {
     "baseline": ("conv_block2-4, near mic, train source", {}, None),
@@ -63,6 +67,8 @@ EXPERIMENTS = {
     "spec_band_norm": ("log-mel z-scored per band", {"spec_band_norm": "zscore"}, SPECTROGRAM_METHODS),
     "spec_fill_dead_bands": ("mel bands above 8 kHz filled", {"spec_dead_band_hz": 8000}, SPECTROGRAM_METHODS),
     "spec_both": ("band z-score + dead bands filled", {"spec_band_norm": "zscore", "spec_dead_band_hz": 8000}, SPECTROGRAM_METHODS),
+    "beats_late": ("BEATs blocks 8,10,12 as backbone", {"backbone": "BEATs", "layers": [8, 10, 12]}, BEATS_METHODS),
+    "beats_mid": ("BEATs blocks 4,6,8 as backbone", {"backbone": "BEATs", "layers": [4, 6, 8]}, BEATS_METHODS),
     "agg_mean": ("score = mean of the anomaly map", {"dcase2026": {"score_aggregation": "mean"}}, None),
 }
 DEFAULT_METHODS = ["patchcore", "padim", "cfa", "stfpm", "dinomaly"]

@@ -295,6 +295,13 @@ banda viva), `spec_both` e `agg_mean` (punteggio = media della mappa invece del 
 isolato in `dcase2026_task2_evaluator/dev/grid_<nome>` e la tabella riassuntiva (AUC source media per
 esperimento e metodo) viene riscritta in `results/paper_benchmark/grid_summary.md` dopo ogni esperimento.
 
+`beats_late` e `beats_mid` usano BEATs come backbone di PatchCore, PaDiM e CFA (STFPM e Dinomaly esclusi):
+i token del ViT (griglia tempo x 8 bande) diventano le mappe di feature. Servono i sorgenti BEATs e il
+checkpoint, indicati con `beats_checkpoint` e `beats_code_dir` nel config (o con le chiavi `knn_beats_*` del
+config kNN). `layers` sono numeri di blocco da 1 a 12. Il codice assume la struttura dei sorgenti unilm
+(blocchi con tempo in prima dimensione, token ordinati per tempo e poi banda): se al primo run da' un errore
+di forma, e' il primo posto dove guardare.
+
 `diagnose_signal_features.py --dataset-path <DCASE>` calcola per macchina l'AUC di semplici statistiche
 del segnale (RMS, centroide spettrale, piattezza, quota di alte frequenze): serve a capire se un'inversione
 sistematica (AUC sotto 0,5) dipende dall'energia del clip.

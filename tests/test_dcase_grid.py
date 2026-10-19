@@ -42,6 +42,10 @@ def test_method_specific_experiments_and_epoch_overrides():
     assert both["spec_band_norm"] == "zscore" and both["spec_dead_band_hz"] == 8000
     assert grid.methods_for("spec_both", ["patchcore", "dinomaly", "draem"]) == ["patchcore", "dinomaly"]
     assert grid.methods_for("agg_mean", ["patchcore", "dinomaly"]) == ["patchcore", "dinomaly"]
+    beats = grid.build_config(base, "beats_late", 30)
+    assert beats["backbone"] == "BEATs" and beats["layers"] == [8, 10, 12]
+    assert grid.build_config(base, "beats_mid", 30)["layers"] == [4, 6, 8]
+    assert grid.methods_for("beats_late", ["patchcore", "padim", "cfa", "stfpm", "dinomaly"]) == ["patchcore", "padim", "cfa"]
     assert grid.methods_for("stfpm_random_student", ["patchcore", "stfpm"]) == ["stfpm"]
     assert grid.methods_for("epochs_long", ["patchcore", "padim", "cfa", "stfpm", "dinomaly"]) == ["cfa", "stfpm", "dinomaly"]
 

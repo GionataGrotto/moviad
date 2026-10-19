@@ -27,7 +27,7 @@ try:
         fit_model,
         load_config,
         make_model,
-        make_spectrogram_transform,
+        spectrogram_size,
         optimal_f1_metrics,
         output_dir,
         percentile_decisions,
@@ -44,7 +44,7 @@ except ImportError:  # supports ``python paper_benchmark/run_*.py``
         fit_model,
         load_config,
         make_model,
-        make_spectrogram_transform,
+        spectrogram_size,
         optimal_f1_metrics,
         output_dir,
         percentile_decisions,
@@ -247,8 +247,7 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     test_ds = DCASE2026Task2Dataset(dataset_path, machine, "test", domain=test_domain, channel=channel, target_sample_rate=sample_rate)
     train_loader = DataLoader(train_ds, batch_size=int(config["batch_size"]), shuffle=True, num_workers=int(config["num_workers"]))
     test_loader = DataLoader(test_ds, batch_size=int(config["batch_size"]), shuffle=False, num_workers=int(config["num_workers"]))
-    spectro = make_spectrogram_transform(config)
-    input_size = tuple(int(dim) for dim in spectro(train_ds[0].unsqueeze(0)).shape[-2:])
+    input_size = spectrogram_size(config, train_ds[0])
     model = make_model(method, config, device, input_size, class_name=machine)
     if args.epochs is not None:
         config["epochs"] = args.epochs

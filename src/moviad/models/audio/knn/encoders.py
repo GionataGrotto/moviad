@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import importlib
-import sys
 from pathlib import Path
 
 import torch
+
+from moviad.utilities.audio.beats_feature_extractor import import_beats
 
 
 class BEATsEncoder:
@@ -49,31 +49,7 @@ class BEATsEncoder:
 
     @staticmethod
     def _import_beats(code_dir):
-        """Import ``BEATs.BEATs`` / ``BEATs.BEATsConfig`` from ``code_dir``.
-
-        Two layouts exist: the unilm one (a plain folder, ``import BEATs``) and the one
-        where the folder is a package whose files import each other as
-        ``from beats.backbone import ...`` (it has an ``__init__.py``). The latter is
-        imported as ``<folder name>.BEATs`` with the parent folder on ``sys.path``.
-        """
-        module_name = "BEATs"
-        if code_dir is not None:
-            folder = Path(code_dir).expanduser()
-            if (folder / "__init__.py").exists():
-                root, module_name = str(folder.parent), f"{folder.name}.BEATs"
-            else:
-                root = str(folder)
-            if root not in sys.path:
-                sys.path.insert(0, root)
-        try:
-            module = importlib.import_module(module_name)
-        except ModuleNotFoundError as error:
-            if error.name not in (module_name, module_name.split(".")[0]) or code_dir is None:
-                raise  # BEATs was found but one of its own imports is missing
-            raise ModuleNotFoundError(
-                f"Cannot find BEATs.py (knn_beats_code_dir={str(code_dir)!r}): set it to the folder that contains it"
-            ) from error
-        return module.BEATs, module.BEATsConfig
+        return import_beats(code_dir)
 
     def _make_hook(self, layer):
         def hook(_module, _inputs, output):

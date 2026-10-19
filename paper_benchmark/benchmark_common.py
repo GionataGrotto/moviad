@@ -250,10 +250,25 @@ AUDIO_BACKBONE_METHODS = frozenset({"patchcore", "padim", "cfa", "stfpm"})
 SPECTROGRAM_ONLY_METHODS = frozenset({"dinomaly", "draem"})
 
 
+def beats_settings(config: dict[str, Any]) -> tuple[Any, Any]:
+    """(checkpoint, source folder) of BEATs; the ``knn_beats_*`` keys are accepted as a fallback."""
+    return (
+        config.get("beats_checkpoint") or config.get("knn_beats_checkpoint"),
+        config.get("beats_code_dir") or config.get("knn_beats_code_dir"),
+    )
+
+
 def check_audio_checkpoint(
     config: dict[str, Any], methods: list[str] | None = None
 ) -> None:
     if not config.get("pretrained", True):
+        return
+    if config.get("backbone") == "BEATs":
+        checkpoint, _ = beats_settings(config)
+        if not checkpoint:
+            raise ValueError("backbone 'BEATs' needs beats_checkpoint (and beats_code_dir) in the config")
+        if not expand_path(checkpoint).exists():
+            raise FileNotFoundError(f"BEATs checkpoint not found: {expand_path(checkpoint)}")
         return
     if methods is not None and not AUDIO_BACKBONE_METHODS.intersection(
         {method.lower() for method in methods}
@@ -284,6 +299,20 @@ def check_audio_checkpoint(
 
 
 def make_feature_extractor(config: dict[str, Any], device: torch.device, frozen: bool = True, pretrained: bool | None = None):
+    if config.get("backbone") == "BEATs":
+        from moviad.utilities.audio.beats_feature_extractor import BEATsFeatureExtractor
+
+        checkpoint, code_dir = beats_settings(config)
+        if not checkpoint:
+            raise ValueError("backbone 'BEATs' needs beats_checkpoint (and beats_code_dir) in the config")
+        return BEATsFeatureExtractor(
+            expand_path(checkpoint),
+            code_dir=code_dir,
+            layers=config["layers"],
+            device=device,
+            frozen=frozen,
+            pretrained=config.get("pretrained", True) if pretrained is None else pretrained,
+        )
     from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 
     return AudioFeatureExtractor(
@@ -320,11 +349,21 @@ def make_wave_to_spectrogram(config: dict[str, Any], device: torch.device, metho
 
 def method_sample_rate(method: str, config: dict[str, Any]) -> int:
     """Sample rate the waveforms must be loaded at for ``method`` (BEATs needs 16 kHz)."""
-    if method.lower() == "knn":
-        from moviad.models.audio.knn import BEATsEncoder
+    if method.lower() == "knn" or config.get("backbone") == "BEATs":
+        from moviad.utilities.audio.beats_feature_extractor import BEATsFeatureExtractor
 
-        return BEATsEncoder.sample_rate
+        return BEATsFeatureExtractor.sample_rate
     return audio_sample_rate(config)
+
+
+def spectrogram_size(config: dict[str, Any], waveform: torch.Tensor) -> tuple[int, int]:
+    """(height, width) of the time-frequency map the anomaly maps are reported at."""
+    if config.get("backbone") == "BEATs":
+        from moviad.utilities.audio.beats_feature_extractor import BEATsFeatureExtractor
+
+        return BEATsFeatureExtractor.fbank_shape(waveform.shape[-1])
+    spectrogram = make_spectrogram_transform(config)(waveform.unsqueeze(0))
+    return tuple(int(dim) for dim in spectrogram.shape[-2:])
 
 
 def make_model(
@@ -470,6 +509,8 @@ def attach_spectrogram_preprocessing(method: str, model, train_loader, config: d
     dead_hz = config.get("spec_dead_band_hz")
     if band_norm == "none" and dead_hz is None:
         return
+    if config.get("backbone") == "BEATs":
+        raise ValueError("spec_band_norm / spec_dead_band_hz apply to the Cnn14 log-mel frontend, not to BEATs")
     from itertools import islice
 
     from moviad.models.audio.audio_vad_model import AudioVADModel
