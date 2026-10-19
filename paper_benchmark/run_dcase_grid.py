@@ -78,7 +78,7 @@ def deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
-def build_config(base: dict, name: str, epochs: int | None, aggregation: str = "temporal_topk_mean") -> dict:
+def build_config(base: dict, name: str, epochs: int | None, aggregation: str = "temporal_topk_mean", suffix: str = "") -> dict:
     description, overrides, _ = EXPERIMENTS[name]
     config = deep_merge(base, {"backbone": "Cnn14", "layers": LAYERS_BLOCKS_2_4})
     if epochs is not None:
@@ -86,7 +86,7 @@ def build_config(base: dict, name: str, epochs: int | None, aggregation: str = "
     # the aggregation is a default an experiment may change; the test protocol is fixed
     config["dcase2026"] = deep_merge(config.get("dcase2026", {}), {"score_aggregation": aggregation})
     config = deep_merge(config, overrides)
-    config["dcase2026"] = deep_merge(config["dcase2026"], {"test_domain": "source", "run_name": f"grid_{name}"})
+    config["dcase2026"] = deep_merge(config["dcase2026"], {"test_domain": "source", "run_name": f"grid_{name}{suffix}"})
     if name != "train_all":
         config["dcase2026"].setdefault("train_domains", "source")
     return config
@@ -97,10 +97,10 @@ def methods_for(name: str, methods: list[str]) -> list[str]:
     return [m for m in methods if only is None or m in only]
 
 
-def collect(experiments: list[str], methods: list[str], domain: str = "source") -> dict:
+def collect(experiments: list[str], methods: list[str], domain: str = "source", suffix: str = "") -> dict:
     table = {}
     for name in experiments:
-        run = ROOT / "dcase2026_task2_evaluator" / "dev" / f"grid_{name}" / "teams" / "moviad"
+        run = ROOT / "dcase2026_task2_evaluator" / "dev" / f"grid_{name}{suffix}" / "teams" / "moviad"
         for method in methods:
             folder = run / method
             results = evaluate_folder(folder, domain) if folder.exists() else {}
@@ -109,8 +109,8 @@ def collect(experiments: list[str], methods: list[str], domain: str = "source") 
     return table
 
 
-def write_summary(path: Path, experiments: list[str], methods: list[str]) -> None:
-    table = collect(experiments, methods)
+def write_summary(path: Path, experiments: list[str], methods: list[str], suffix: str = "") -> None:
+    table = collect(experiments, methods, suffix=suffix)
     lines = ["# Griglia DCASE 2026: AUC source media (7 macchine)", "",
              "| Esperimento | " + " | ".join(methods) + " |", "|---|" + "---|" * len(methods)]
     for name in experiments:
@@ -131,10 +131,14 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=30, help="epochs of cfa/stfpm/dinomaly (patchcore and padim ignore it)")
     parser.add_argument("--aggregation", choices=("max", "mean", "temporal_topk_mean"), default="temporal_topk_mean",
                         help="file-level score; the same for every experiment")
-    parser.add_argument("--summary", type=Path, default=ROOT / "results" / "paper_benchmark" / "grid_summary.md")
+    parser.add_argument("--seed", type=int, default=None, help="seed of the runs (default: the runner's default)")
+    parser.add_argument("--run-suffix", default="", help="appended to every run name, e.g. _seed2, so repeated runs do not overwrite each other")
+    parser.add_argument("--summary", type=Path, default=None, help="default: results/paper_benchmark/grid_summary<suffix>.md")
     parser.add_argument("--dry-run", action="store_true", help="print the commands without running them")
     args = parser.parse_args()
 
+    suffix = args.run_suffix
+    summary_path = args.summary or ROOT / "results" / "paper_benchmark" / f"grid_summary{suffix}.md"
     base = json.loads(args.base_config.expanduser().read_text(encoding="utf-8"))
     config_dir = ROOT / "paper_benchmark" / "grid_configs"
     config_dir.mkdir(exist_ok=True)
@@ -143,17 +147,19 @@ def main() -> None:
         methods = methods_for(name, args.methods)
         if not methods:
             continue
-        config_path = config_dir / f"config.grid_{name}.json"
-        config_path.write_text(json.dumps(build_config(base, name, args.epochs, args.aggregation), indent=2), encoding="utf-8")
+        config_path = config_dir / f"config.grid_{name}{suffix}.json"
+        config_path.write_text(json.dumps(build_config(base, name, args.epochs, args.aggregation, suffix), indent=2), encoding="utf-8")
         command = [sys.executable, str(HERE / "run_dcase2026_task2.py"), "--config", str(config_path), "--methods", *methods]
+        if args.seed is not None:
+            command += ["--seed", str(args.seed)]
         print(f"\n=== {name}: {EXPERIMENTS[name][0]}\n$ {' '.join(command)}", flush=True)
         if args.dry_run:
             continue
         result = subprocess.run(command, cwd=ROOT)
         if result.returncode != 0:
             print(f"!! experiment {name} failed (exit code {result.returncode}); continuing", file=sys.stderr)
-        write_summary(args.summary, args.experiments, args.methods)
-        print(f"summary updated: {args.summary}", flush=True)
+        write_summary(summary_path, args.experiments, args.methods, suffix)
+        print(f"summary updated: {summary_path}", flush=True)
 
 
 if __name__ == "__main__":

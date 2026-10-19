@@ -115,3 +115,20 @@ def test_signal_feature_diagnostic_detects_a_louder_anomaly(tmp_path, capsys, mo
 
     row = [line for line in capsys.readouterr().out.splitlines() if line.startswith("fan")][0].split()
     assert float(row[1]) == 1.0  # rms: every anomaly is louder than every normal clip
+
+
+def test_seed_and_run_suffix_keep_repeated_runs_apart(tmp_path, monkeypatch, capsys):
+    base = {"dcase2026": {"dataset_path": "/data"}}
+    assert grid.build_config(base, "baseline", 5, suffix="_seed2")["dcase2026"]["run_name"] == "grid_baseline_seed2"
+    assert grid.build_config(base, "baseline", 5)["dcase2026"]["run_name"] == "grid_baseline"
+
+    config = tmp_path / "base.json"
+    config.write_text(json.dumps(base))
+    monkeypatch.setattr("sys.argv", ["run_dcase_grid.py", "--base-config", str(config), "--methods", "dinomaly",
+                                     "--experiments", "baseline", "--seed", "7", "--run-suffix", "_seed7", "--dry-run"])
+    grid.main()
+
+    output = capsys.readouterr().out
+    assert "--seed 7" in output
+    written = json.loads((grid.ROOT / "paper_benchmark" / "grid_configs" / "config.grid_baseline_seed7.json").read_text())
+    assert written["dcase2026"]["run_name"] == "grid_baseline_seed7"
