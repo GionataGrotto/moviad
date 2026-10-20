@@ -302,6 +302,13 @@ config kNN). `layers` sono numeri di blocco da 1 a 12. Il codice assume la strut
 (blocchi con tempo in prima dimensione, token ordinati per tempo e poi banda): se al primo run da' un errore
 di forma, e' il primo posto dove guardare.
 
+Per cercare la configurazione migliore con BEATs ci sono tre gruppi, da lanciare con `--preset` in
+quest'ordine: `beats_layers` (quali blocchi: 8-10-12, 4-6-8, solo 12, solo 10, 10-11-12, 6-9-12),
+`beats_protocol` (+ i 10 clip target, near - far, punteggio = media della mappa) e `beats_heads`
+(PaDiM con covarianza completa o 576 canali, PatchCore con memoria da 60000, CFA con `gamma_c=1`);
+`beats_search` li lancia tutti. In fondo a `grid_summary.md` la tabella indica il migliore per metodo.
+Per confermare la scelta finale ripeti il migliore con altri seed (`--seed`, `--run-suffix`).
+
 `diagnose_signal_features.py --dataset-path <DCASE>` calcola per macchina l'AUC di semplici statistiche
 del segnale (RMS, centroide spettrale, piattezza, quota di alte frequenze): serve a capire se un'inversione
 sistematica (AUC sotto 0,5) dipende dall'energia del clip.

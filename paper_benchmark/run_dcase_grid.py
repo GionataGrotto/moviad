@@ -13,6 +13,10 @@ clips), so the mean source AUC of each row is directly comparable:
                  filled with the last live band / both
     beats_late / beats_mid   BEATs transformer blocks 8,10,12 / 4,6,8 as the backbone of patchcore, padim, cfa
                  (needs beats_checkpoint / beats_code_dir, or the knn_beats_* keys, in the base config)
+    beats_* search: block choice (b12, b10, b10_12, b6_9_12), protocol (+ target clips, near - far,
+                 mean score) and detector settings (PaDiM full covariance / 576 channels,
+                 PatchCore bank 60000, CFA gamma_c=1), all around beats_late. Presets:
+                 beats_layers, beats_protocol, beats_heads, beats_search (all of them)
     agg_mean     file score = mean of the anomaly map instead of the temporal top-k
     patchcore_standardize / patchcore_big_bank   z-scored channels / 60000-patch memory bank
     padim_full_cov   full covariance instead of the diagonal one
@@ -49,6 +53,7 @@ LAYER_METHODS = {"patchcore", "padim", "cfa", "stfpm"}
 SPECTROGRAM_METHODS = LAYER_METHODS | {"dinomaly"}
 # heads that run on feature maps; STFPM trains its student with an SGD setup made for CNNs, so it is left out
 BEATS_METHODS = {"patchcore", "padim", "cfa"}
+BEATS_LATE = {"backbone": "BEATs", "layers": [8, 10, 12]}
 #: name -> (description, config overrides, methods the experiment applies to; None = all)
 EXPERIMENTS = {
     "baseline": ("conv_block2-4, near mic, train source", {}, None),
@@ -69,9 +74,28 @@ EXPERIMENTS = {
     "spec_both": ("band z-score + dead bands filled", {"spec_band_norm": "zscore", "spec_dead_band_hz": 8000}, SPECTROGRAM_METHODS),
     "beats_late": ("BEATs blocks 8,10,12 as backbone", {"backbone": "BEATs", "layers": [8, 10, 12]}, BEATS_METHODS),
     "beats_mid": ("BEATs blocks 4,6,8 as backbone", {"backbone": "BEATs", "layers": [4, 6, 8]}, BEATS_METHODS),
+    # ---- search for the best BEATs configuration, one factor at a time around beats_late ----
+    "beats_b12": ("BEATs block 12 only", {"backbone": "BEATs", "layers": [12]}, BEATS_METHODS),
+    "beats_b10": ("BEATs block 10 only", {"backbone": "BEATs", "layers": [10]}, BEATS_METHODS),
+    "beats_b10_12": ("BEATs blocks 10,11,12", {"backbone": "BEATs", "layers": [10, 11, 12]}, BEATS_METHODS),
+    "beats_b6_9_12": ("BEATs blocks 6,9,12", {"backbone": "BEATs", "layers": [6, 9, 12]}, BEATS_METHODS),
+    "beats_late_train_all": ("beats_late + 10 target clips", {**BEATS_LATE, "dcase2026": {"train_domains": "all"}}, BEATS_METHODS),
+    "beats_late_diff": ("beats_late on near - far", {**BEATS_LATE, "dcase2026": {"channel": "diff"}}, BEATS_METHODS),
+    "beats_late_agg_mean": ("beats_late, score = mean of the map", {**BEATS_LATE, "dcase2026": {"score_aggregation": "mean"}}, BEATS_METHODS),
+    "beats_padim_full_cov": ("beats_late, PaDiM full covariance", {**BEATS_LATE, "padim_diag_cov": False}, {"padim"}),
+    "beats_padim_d576": ("beats_late, PaDiM 576 channels (25%)", {**BEATS_LATE, "padim_embedding_dim": 576}, {"padim"}),
+    "beats_pc_bank60k": ("beats_late, PatchCore bank 60000", {**BEATS_LATE, "memory_bank_size": 60000}, {"patchcore"}),
+    "beats_cfa_gamma1": ("beats_late, CFA gamma_c=1", {**BEATS_LATE, "cfa_gamma_c": 1}, {"cfa"}),
     "agg_mean": ("score = mean of the anomaly map", {"dcase2026": {"score_aggregation": "mean"}}, None),
 }
 DEFAULT_METHODS = ["patchcore", "padim", "cfa", "stfpm", "dinomaly"]
+#: ready-made groups, run in this order: first which blocks, then the protocol, then the detector settings
+PRESETS = {
+    "beats_layers": ["beats_late", "beats_mid", "beats_b12", "beats_b10", "beats_b10_12", "beats_b6_9_12"],
+    "beats_protocol": ["beats_late_train_all", "beats_late_diff", "beats_late_agg_mean"],
+    "beats_heads": ["beats_padim_full_cov", "beats_padim_d576", "beats_pc_bank60k", "beats_cfa_gamma1"],
+}
+PRESETS["beats_search"] = PRESETS["beats_layers"] + PRESETS["beats_protocol"] + PRESETS["beats_heads"]
 
 
 def deep_merge(base: dict, override: dict) -> dict:
@@ -115,6 +139,18 @@ def collect(experiments: list[str], methods: list[str], domain: str = "source", 
     return table
 
 
+def best_per_method(table: dict, experiments: list[str], methods: list[str]) -> dict:
+    """The experiment with the highest mean AUC for every method (only runs that finished all 7 machines)."""
+    best = {}
+    for method in methods:
+        complete = [(table[(name, method)][0], name) for name in experiments
+                    if table.get((name, method)) is not None and table[(name, method)][1] == 7]
+        if complete:
+            value, name = max(complete)
+            best[method] = (name, value)
+    return best
+
+
 def write_summary(path: Path, experiments: list[str], methods: list[str], suffix: str = "") -> None:
     table = collect(experiments, methods, suffix=suffix)
     lines = ["# Griglia DCASE 2026: AUC source media (7 macchine)", "",
@@ -133,7 +169,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base-config", type=Path, required=True, help="config with dcase2026.dataset_path and the device")
     parser.add_argument("--methods", nargs="+", default=DEFAULT_METHODS)
-    parser.add_argument("--experiments", nargs="+", choices=list(EXPERIMENTS), default=list(EXPERIMENTS))
+    parser.add_argument("--experiments", nargs="+", choices=list(EXPERIMENTS), default=None)
+    parser.add_argument("--preset", choices=list(PRESETS), default=None, help="a ready-made group of experiments")
     parser.add_argument("--epochs", type=int, default=30, help="epochs of cfa/stfpm/dinomaly (patchcore and padim ignore it)")
     parser.add_argument("--aggregation", choices=("max", "mean", "temporal_topk_mean"), default="temporal_topk_mean",
                         help="file-level score; the same for every experiment")
@@ -143,6 +180,9 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="print the commands without running them")
     args = parser.parse_args()
 
+    if args.preset and args.experiments:
+        parser.error("use either --preset or --experiments")
+    args.experiments = PRESETS[args.preset] if args.preset else (args.experiments or list(EXPERIMENTS))
     suffix = args.run_suffix
     summary_path = args.summary or ROOT / "results" / "paper_benchmark" / f"grid_summary{suffix}.md"
     base = json.loads(args.base_config.expanduser().read_text(encoding="utf-8"))
