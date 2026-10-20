@@ -11,6 +11,7 @@ import argparse
 import csv
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -234,6 +235,29 @@ def _metrics(scores, labels, domains):
     return result
 
 
+def load_results(path: Path) -> list[dict]:
+    """Rows saved by earlier invocations of the same run (empty if there are none or the file is unreadable)."""
+    if not path.exists():
+        return []
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        path.rename(path.with_suffix(".corrupt.json"))  # keep the broken file instead of silently dropping it
+        return []
+    return rows if isinstance(rows, list) else []
+
+
+def upsert_result(rows: list[dict], row: dict) -> list[dict]:
+    """Replace the row of the same (method, machine, debug) or append a new one.
+
+    The file used to be rewritten from scratch by every invocation, so repeating or extending a run
+    (another method, a missing machine) erased the rows of the previous ones.
+    """
+    key = (row.get("method"), row.get("machine"), row.get("debug"))
+    kept = [r for r in rows if (r.get("method"), r.get("machine"), r.get("debug")) != key]
+    return kept + [row]
+
+
 def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     device = resolve_device(config.get(f"{method}_device", config["device"]))
     set_seed(seed)
@@ -304,6 +328,10 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
         "test_size": len(test_ds),
         "score_aggregation": aggregation,
         "score_topk": top_k,
+        "backbone": config.get("backbone"),
+        "layers": config.get("layers"),
+        "run_name": dcase.get("run_name"),
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
     })
 
     team_dir = evaluator_root / "teams" / "moviad" / method
@@ -346,14 +374,14 @@ def main() -> None:
     machines = args.machines or discover_machine_types(dataset_path)
     if args.debug:
         machines = machines[:1]
-    rows = []
+    result_path = output_dir(config) / "dcase2026_task2_results.json"
+    rows = load_results(result_path)
     for method in methods:
         for machine in machines:
             print(f"[DCASE2026] method={method} machine={machine}")
-            rows.append(run_one(method, config, dataset_path, machine, args.seed, args, evaluator_root))
-            (output_dir(config) / "dcase2026_task2_results.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
-    result_path = output_dir(config) / "dcase2026_task2_results.json"
-    result_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+            row = run_one(method, config, dataset_path, machine, args.seed, args, evaluator_root)
+            rows = upsert_result(rows, row)
+            result_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
     print(json.dumps(rows, indent=2))
 
 

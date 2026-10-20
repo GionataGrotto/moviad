@@ -139,6 +139,30 @@ def collect(experiments: list[str], methods: list[str], domain: str = "source", 
     return table
 
 
+MACHINES = ["ToyCar", "ToyCarEmu", "bearingEmu", "fan", "gearboxEmu", "sliderEmu", "valveEmu"]
+
+
+def machine_detail(experiments: list[str], methods: list[str], suffix: str = "", domain: str = "source", root: Path = ROOT) -> list[str]:
+    """Markdown tables with the AUC of every machine for every run that has score files."""
+    lines = []
+    for name in experiments:
+        run = root / "dcase2026_task2_evaluator" / "dev" / f"grid_{name}{suffix}" / "teams" / "moviad"
+        block = []
+        for method in methods:
+            folder = run / method
+            results = evaluate_folder(folder, domain) if folder.exists() else {}
+            if not results:
+                continue
+            cells = [f"{results[m][0]:.3f}" if m in results and results[m][0] is not None else "-" for m in MACHINES]
+            aucs = [results[m][0] for m in MACHINES if m in results and results[m][0] is not None]
+            paucs = [results[m][1] for m in MACHINES if m in results and results[m][1] is not None]
+            block.append(f"| {method} | " + " | ".join(cells) + f" | {sum(aucs) / len(aucs):.3f} | {sum(paucs) / len(paucs):.3f} |")
+        if block:
+            lines += ["", f"### {name}: {EXPERIMENTS[name][0]}", "",
+                      "| Metodo | " + " | ".join(MACHINES) + " | Media AUC | Media pAUC |", "|---|" + "---|" * (len(MACHINES) + 2)] + block
+    return lines
+
+
 def best_per_method(table: dict, experiments: list[str], methods: list[str]) -> dict:
     """The experiment with the highest mean AUC for every method (only runs that finished all 7 machines)."""
     best = {}
