@@ -16,7 +16,7 @@ clips), so the mean source AUC of each row is directly comparable:
     beats_* search: block choice (b12, b10, b10_12, b6_9_12), protocol (+ target clips, near - far,
                  mean score) and detector settings (PaDiM full covariance / 576 channels,
                  PatchCore bank 60000, CFA gamma_c=1), all around beats_late. Presets:
-                 beats_layers, beats_protocol, beats_heads, beats_search (all of them)
+                 beats_layers, beats_protocol, beats_heads, beats_search (all of them), band_search, band_full
     agg_mean     file score = mean of the anomaly map instead of the temporal top-k
     patchcore_standardize / patchcore_big_bank   z-scored channels / 60000-patch memory bank
     padim_full_cov   full covariance instead of the diagonal one
@@ -86,6 +86,17 @@ EXPERIMENTS = {
     "beats_padim_d576": ("beats_late, PaDiM 576 channels (25%)", {**BEATS_LATE, "padim_embedding_dim": 576}, {"padim"}),
     "beats_pc_bank60k": ("beats_late, PatchCore bank 60000", {**BEATS_LATE, "memory_bank_size": 60000}, {"patchcore"}),
     "beats_cfa_gamma1": ("beats_late, CFA gamma_c=1", {**BEATS_LATE, "cfa_gamma_c": 1}, {"cfa"}),
+    # ---- per-band ideas on top of the best BEATs setups: see the "band_search" preset ----
+    "band_pc_banks": ("PatchCore, one memory bank per band", {**BEATS_LATE, "patchcore_band_banks": True}, {"patchcore"}),
+    "band_pc_std": ("PatchCore, per-band score standardisation", {**BEATS_LATE, "patchcore_score_std": "band"}, {"patchcore"}),
+    "band_pc_banks_std": ("PatchCore, per-band banks + score standardisation",
+                          {**BEATS_LATE, "patchcore_band_banks": True, "patchcore_score_std": "band"}, {"patchcore"}),
+    "band_padim_gauss": ("PaDiM, one diagonal Gaussian per band", {**BEATS_LATE, "padim_per_band": True}, {"padim"}),
+    "band_padim_gauss_full": ("PaDiM, one full-covariance Gaussian per band",
+                              {**BEATS_LATE, "padim_per_band": True, "padim_diag_cov": False}, {"padim"}),
+    "band_padim_gauss_full_std": ("PaDiM, per-band full Gaussians + score standardisation",
+                                  {**BEATS_LATE, "padim_per_band": True, "padim_diag_cov": False, "padim_score_std": "band"}, {"padim"}),
+    "dinomaly_l2": ("Dinomaly, L2 distance instead of cosine", {"dinomaly_distance": "l2"}, {"dinomaly"}),
     "agg_mean": ("score = mean of the anomaly map", {"dcase2026": {"score_aggregation": "mean"}}, None),
 }
 DEFAULT_METHODS = ["patchcore", "padim", "cfa", "stfpm", "dinomaly"]
@@ -95,6 +106,14 @@ PRESETS = {
     "beats_protocol": ["beats_late_train_all", "beats_late_diff", "beats_late_agg_mean"],
     "beats_heads": ["beats_padim_full_cov", "beats_padim_d576", "beats_pc_bank60k", "beats_cfa_gamma1"],
 }
+PRESETS["band_search"] = [
+    "band_pc_banks", "band_pc_std", "band_pc_banks_std",
+    "band_padim_gauss", "band_padim_gauss_full", "band_padim_gauss_full_std",
+]
+#: the band ideas next to their references (beats_late for PatchCore, full covariance for PaDiM), rerun with the same code
+PRESETS["band_full"] = ["beats_late", "beats_padim_full_cov"] + PRESETS["band_search"]
+#: aggregations compared from the same trained model by --aggregation-sweep
+AGGREGATION_SWEEP = ["max", "mean", "top5pct", "top10pct"]
 PRESETS["beats_search"] = PRESETS["beats_layers"] + PRESETS["beats_protocol"] + PRESETS["beats_heads"]
 
 
@@ -108,7 +127,8 @@ def deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
-def build_config(base: dict, name: str, epochs: int | None, aggregation: str = "temporal_topk_mean", suffix: str = "") -> dict:
+def build_config(base: dict, name: str, epochs: int | None, aggregation: str = "temporal_topk_mean", suffix: str = "",
+                 extra_aggregations: tuple[str, ...] = ()) -> dict:
     description, overrides, _ = EXPERIMENTS[name]
     config = deep_merge(base, {"backbone": "Cnn14", "layers": LAYERS_BLOCKS_2_4})
     if epochs is not None:
@@ -117,9 +137,19 @@ def build_config(base: dict, name: str, epochs: int | None, aggregation: str = "
     config["dcase2026"] = deep_merge(config.get("dcase2026", {}), {"score_aggregation": aggregation})
     config = deep_merge(config, overrides)
     config["dcase2026"] = deep_merge(config["dcase2026"], {"test_domain": "source", "run_name": f"grid_{name}{suffix}"})
+    if extra_aggregations:
+        config["dcase2026"]["extra_aggregations"] = [a for a in extra_aggregations if a != config["dcase2026"]["score_aggregation"]]
     if name != "train_all":
         config["dcase2026"].setdefault("train_domains", "source")
     return config
+
+
+def summary_labels(methods: list[str], extra_aggregations: tuple[str, ...] = (), primary: str = "temporal_topk_mean") -> list[str]:
+    """Summary columns: every method, then its extra aggregations written as ``method@aggregation``."""
+    labels = list(methods)
+    for method in methods:
+        labels += [f"{method}@{a}" for a in extra_aggregations if a != primary]
+    return labels
 
 
 def methods_for(name: str, methods: list[str]) -> list[str]:
@@ -127,10 +157,10 @@ def methods_for(name: str, methods: list[str]) -> list[str]:
     return [m for m in methods if only is None or m in only]
 
 
-def collect(experiments: list[str], methods: list[str], domain: str = "source", suffix: str = "") -> dict:
+def collect(experiments: list[str], methods: list[str], domain: str = "source", suffix: str = "", root: Path = ROOT) -> dict:
     table = {}
     for name in experiments:
-        run = ROOT / "dcase2026_task2_evaluator" / "dev" / f"grid_{name}{suffix}" / "teams" / "moviad"
+        run = root / "dcase2026_task2_evaluator" / "dev" / f"grid_{name}{suffix}" / "teams" / "moviad"
         for method in methods:
             folder = run / method
             results = evaluate_folder(folder, domain) if folder.exists() else {}
@@ -161,6 +191,12 @@ def machine_detail(experiments: list[str], methods: list[str], suffix: str = "",
             lines += ["", f"### {name}: {EXPERIMENTS[name][0]}", "",
                       "| Metodo | " + " | ".join(MACHINES) + " | Media AUC | Media pAUC |", "|---|" + "---|" * (len(MACHINES) + 2)] + block
     return lines
+
+
+def pending_methods(name: str, methods: list[str], suffix: str = "", root: Path = ROOT) -> list[str]:
+    """The methods of an experiment that do not yet have score files for all seven machines."""
+    table = collect([name], methods, suffix=suffix, root=root)
+    return [m for m in methods if table[(name, m)] is None or table[(name, m)][1] < len(MACHINES)]
 
 
 def best_per_method(table: dict, experiments: list[str], methods: list[str]) -> dict:
@@ -201,6 +237,13 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None, help="seed of the runs (default: the runner's default)")
     parser.add_argument("--run-suffix", default="", help="appended to every run name, e.g. _seed2, so repeated runs do not overwrite each other")
     parser.add_argument("--summary", type=Path, default=None, help="default: results/paper_benchmark/grid_summary<suffix>.md")
+    parser.add_argument("--extra-aggregations", nargs="+", default=[],
+                        help="more file scores computed from the same trained model (max, mean, top5pct, ...), "
+                             "reported as extra columns method@aggregation")
+    parser.add_argument("--aggregation-sweep", action="store_true",
+                        help=f"shorthand for --extra-aggregations {' '.join(AGGREGATION_SWEEP)}")
+    parser.add_argument("--skip-done", action="store_true",
+                        help="skip the (experiment, method) pairs that already have score files for all 7 machines")
     parser.add_argument("--dry-run", action="store_true", help="print the commands without running them")
     args = parser.parse_args()
 
@@ -208,6 +251,8 @@ def main() -> None:
         parser.error("use either --preset or --experiments")
     args.experiments = PRESETS[args.preset] if args.preset else (args.experiments or list(EXPERIMENTS))
     suffix = args.run_suffix
+    extras = tuple(dict.fromkeys(args.extra_aggregations + (AGGREGATION_SWEEP if args.aggregation_sweep else [])))
+    columns = summary_labels(args.methods, extras, args.aggregation)
     summary_path = args.summary or ROOT / "results" / "paper_benchmark" / f"grid_summary{suffix}.md"
     base = json.loads(args.base_config.expanduser().read_text(encoding="utf-8"))
     config_dir = ROOT / "paper_benchmark" / "grid_configs"
@@ -215,10 +260,15 @@ def main() -> None:
 
     for name in args.experiments:
         methods = methods_for(name, args.methods)
+        if args.skip_done:
+            pending = pending_methods(name, methods, suffix)
+            if pending != methods:
+                print(f"--skip-done: {name} already complete for {[m for m in methods if m not in pending]}", flush=True)
+            methods = pending
         if not methods:
             continue
         config_path = config_dir / f"config.grid_{name}{suffix}.json"
-        config_path.write_text(json.dumps(build_config(base, name, args.epochs, args.aggregation, suffix), indent=2), encoding="utf-8")
+        config_path.write_text(json.dumps(build_config(base, name, args.epochs, args.aggregation, suffix, extras), indent=2), encoding="utf-8")
         command = [sys.executable, str(HERE / "run_dcase2026_task2.py"), "--config", str(config_path), "--methods", *methods]
         if args.seed is not None:
             command += ["--seed", str(args.seed)]
@@ -228,7 +278,7 @@ def main() -> None:
         result = subprocess.run(command, cwd=ROOT)
         if result.returncode != 0:
             print(f"!! experiment {name} failed (exit code {result.returncode}); continuing", file=sys.stderr)
-        write_summary(summary_path, args.experiments, args.methods, suffix)
+        write_summary(summary_path, args.experiments, columns, suffix)
         print(f"summary updated: {summary_path}", flush=True)
 
 

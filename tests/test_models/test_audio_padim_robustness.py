@@ -125,8 +125,8 @@ def test_covariance_inverse_is_computed_once_not_on_every_batch(monkeypatch):
     model.fit(spectrogram_loader(), progress=False)
     model.eval()
     calls = []
-    original = torch.linalg.inv
-    monkeypatch.setattr(torch.linalg, "inv", lambda *args, **kwargs: calls.append(1) or original(*args, **kwargs))
+    original = torch.cholesky_inverse
+    monkeypatch.setattr(torch, "cholesky_inverse", lambda *args, **kwargs: calls.append(1) or original(*args, **kwargs))
 
     for _ in range(3):
         model(torch.randn(2, 1, 8, 8))

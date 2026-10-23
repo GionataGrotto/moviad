@@ -49,6 +49,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "spec_band_norm": "none",
     "spec_dead_band_hz": None,
     "spec_stats_batches": 50,
+    "patchcore_band_banks": False,
+    "patchcore_score_std": "none",
+    "padim_per_band": False,
+    "padim_score_std": "none",
+    "score_std_holdout": 0.1,
+    "dinomaly_distance": "cosine",
     "patchcore_standardize": False,
     "patchcore_num_neighbors": 9,
     "stfpm_student_pretrained": True,
@@ -386,6 +392,9 @@ def make_model(
             memory_bank_size=int(config["memory_bank_size"]),
             blur=True,
             standardize_features=bool(config.get("patchcore_standardize", False)),
+            band_banks=bool(config.get("patchcore_band_banks", False)),
+            score_standardization=config.get("patchcore_score_std", "none"),
+            holdout_fraction=float(config.get("score_std_holdout", 0.1)),
         ).to(device)
 
     if method == "knn":
@@ -422,6 +431,9 @@ def make_model(
                 Padim.lookup_embedding_size(config["backbone"], config["layers"])[0],
             ),
             covariance_reg=float(config.get("padim_covariance_reg", 0.01)),
+            per_band=bool(config.get("padim_per_band", False)),
+            score_standardization=config.get("padim_score_std", "none"),
+            holdout_fraction=float(config.get("score_std_holdout", 0.1)),
         )
         return model.to(device)
 
@@ -466,6 +478,7 @@ def make_model(
             image_size=image_size,
             pretrained=bool(config.get("dinomaly_pretrained", True)),
             spectrogram_backbone=config.get("backbone", "Cnn14"),
+            distance=config.get("dinomaly_distance", "cosine"),
         ).to(device)
 
     if method == "draem":

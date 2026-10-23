@@ -14,6 +14,12 @@ from torch import Tensor
 from tqdm import tqdm
 
 from moviad.models.audio.audio_vad_model import AudioVADModel
+from moviad.models.audio.components.band_scores import (
+    BandScoreStats,
+    holdout_period,
+    is_holdout,
+    standardize_by_band,
+)
 from moviad.models.audio.components.feature_ops import (
     fuse_feature_maps,
     temporal_topk_scores,
@@ -41,6 +47,9 @@ class PatchCore(AudioVADModel):
         blur: bool = True,
         normalize_maps: bool = False,
         standardize_features: bool = False,
+        band_banks: bool = False,
+        score_standardization: str = "none",
+        holdout_fraction: float = 0.1,
     ) -> None:
         """
         Args:
@@ -55,6 +64,12 @@ class PatchCore(AudioVADModel):
             standardize_features: z-score every channel of the fused features with the mean and
                 standard deviation of the training set. Without it the layers with large
                 activations dominate the euclidean distances.
+            band_banks: one memory bank per frequency position of the feature map instead of a
+                single one (``memory_bank_size`` is split evenly). A patch is then compared only
+                with normal patches of its own band; time stays free, as it should for audio.
+            score_standardization: ``"band"`` standardises the patch scores of every frequency band
+                with the mean / std of held-out normal clips (``holdout_fraction`` of the training
+                batches, excluded from the memory bank); ``"none"`` leaves the scores untouched.
         """
         super().__init__(
             feature_extractor=feature_extractor,
@@ -63,6 +78,8 @@ class PatchCore(AudioVADModel):
         )
         if len(input_size) != 2:
             raise ValueError("input_size should be a tuple of 2 integers")
+        if score_standardization not in ("none", "band"):
+            raise ValueError(f"score_standardization must be 'none' or 'band', got {score_standardization!r}")
 
         self.num_neighbors = num_neighbors
         self.memory_bank_size = memory_bank_size
@@ -70,9 +87,16 @@ class PatchCore(AudioVADModel):
         self.anomaly_map_generator = AnomalyMapGenerator(blur=blur, normalize=normalize_maps)
 
         self.standardize_features = standardize_features
+        self.band_banks = band_banks
+        self.score_standardization = score_standardization
+        self.holdout_fraction = holdout_fraction
         self.register_buffer("memory_bank", Tensor())
         self.register_buffer("feature_mean", Tensor())
         self.register_buffer("feature_std", Tensor())
+        # the per-band banks are stored concatenated in memory_bank; this holds their sizes
+        self.register_buffer("band_bank_sizes", torch.zeros(0, dtype=torch.long))
+        self.register_buffer("score_mean", Tensor())
+        self.register_buffer("score_std", Tensor())
         self.memory_bank: Tensor
 
     # ------------------------------------------------------------------ fit
@@ -98,7 +122,6 @@ class PatchCore(AudioVADModel):
         selection_device = (
             torch.device("cpu") if force_cpu or self.device.type == "cpu" else self.device
         )
-        coreset = StreamingCoreset(self.memory_bank_size, projection_dim, seed)
         try:
             num_batches = len(train_dataloader)
         except TypeError:
@@ -107,20 +130,60 @@ class PatchCore(AudioVADModel):
         if self.standardize_features:
             self.fit_standardizer(train_dataloader)
 
-        was_training = self.training
-        self.train()
-        try:
-            for batch in tqdm(train_dataloader, desc="PatchCore embedding extraction"):
-                embedding = self(self.batch_input(batch)).detach().to(selection_device)
-                if num_batches:
-                    keep = math.ceil(pool_factor * self.memory_bank_size / num_batches)
-                else:
-                    keep = math.ceil(0.1 * embedding.shape[0])
-                coreset.add(embedding, keep)
-        finally:
-            self.train(was_training)
+        standardize_scores = self.score_standardization == "band"
+        period = holdout_period(self.holdout_fraction) if standardize_scores else None
+        # a bank needs data: the held-out batches do not contribute to it
+        bank_batches = num_batches if not (num_batches and period) else max(1, num_batches - num_batches // period)
 
-        self.memory_bank = coreset.result(selection_device).to(self.device)
+        coresets: list[StreamingCoreset] | None = None  # one per band, created on the first batch
+        global_coreset = None if self.band_banks else StreamingCoreset(self.memory_bank_size, projection_dim, seed)
+        held_out: list[Tensor] = []
+
+        for index, batch in enumerate(tqdm(train_dataloader, desc="PatchCore embedding extraction")):
+            embedding_map = self.embed(self.batch_input(batch)).detach()
+            if period and is_holdout(index, period):
+                held_out.append(embedding_map.cpu())
+                continue
+            batch_size, channels, height, width = embedding_map.shape
+            if self.band_banks:
+                if coresets is None:
+                    band_size = self.memory_bank_size // width
+                    if band_size < 1:
+                        raise ValueError(f"memory_bank_size {self.memory_bank_size} is too small for {width} bands")
+                    coresets = [StreamingCoreset(band_size, projection_dim, seed + band) for band in range(width)]
+                for band, coreset in enumerate(coresets):
+                    band_embedding = embedding_map[:, :, :, band].permute(0, 2, 1).reshape(-1, channels)
+                    keep = math.ceil(pool_factor * coreset.bank_size / bank_batches) if bank_batches else math.ceil(0.1 * band_embedding.shape[0])
+                    coreset.add(band_embedding.to(selection_device), keep)
+            else:
+                embedding = self.reshape_embedding(embedding_map).to(selection_device)
+                keep = math.ceil(pool_factor * self.memory_bank_size / bank_batches) if bank_batches else math.ceil(0.1 * embedding.shape[0])
+                global_coreset.add(embedding, keep)
+
+        if self.band_banks:
+            if coresets is None:
+                raise RuntimeError("Cannot build a memory bank from an empty dataset")
+            banks = [coreset.result(selection_device) for coreset in coresets]
+            self.band_bank_sizes = torch.tensor([bank.shape[0] for bank in banks], dtype=torch.long)
+            self.memory_bank = torch.cat(banks).to(self.device)
+        else:
+            self.band_bank_sizes = torch.zeros(0, dtype=torch.long)
+            self.memory_bank = global_coreset.result(selection_device).to(self.device)
+
+        if standardize_scores:
+            self._fit_score_statistics(held_out)
+        else:
+            self.score_mean, self.score_std = Tensor(), Tensor()
+
+    @torch.no_grad()
+    def _fit_score_statistics(self, held_out: list[Tensor]) -> None:
+        """Per-band mean / std of the patch scores of normal clips that are not in the memory bank."""
+        statistics = BandScoreStats()
+        for embedding_map in held_out:
+            scores, _ = self._patch_scores(embedding_map.to(self.device))
+            statistics.update(scores)
+        mean, std = statistics.finalize()
+        self.score_mean, self.score_std = mean.to(self.device), std.to(self.device)
 
     @torch.no_grad()
     def fit_standardizer(self, train_dataloader, max_batches: int = 16) -> None:
@@ -154,7 +217,6 @@ class PatchCore(AudioVADModel):
         if isinstance(features, dict):
             features = list(features.values())
         features = [self.feature_pooler(feature) for feature in features]
-        # TODO: audio positional encoding should only separate frequency bands, not time.
         fused = fuse_feature_maps(features)
         if self.standardize_features and self.feature_mean.numel():
             fused = (fused - self.feature_mean.view(1, -1, 1, 1)) / self.feature_std.view(1, -1, 1, 1)
@@ -173,16 +235,45 @@ class PatchCore(AudioVADModel):
             raise RuntimeError("The memory bank is empty: fit the model before evaluating it")
         self.memory_bank = self.memory_bank.to(self.device)
 
-        patch_scores, locations = self.nearest_neighbors(embedding, n_neighbors=1)
-        patch_scores = patch_scores.reshape(batch_size, -1)
+        scores, locations = self._patch_scores(embedding_map)  # (B, H, W)
+        if self.score_mean.numel():
+            scores = standardize_by_band(scores, self.score_mean, self.score_std)
+        patch_scores = scores.reshape(batch_size, -1)
         locations = locations.reshape(batch_size, -1)
-        pred_scores = self.compute_anomaly_score(patch_scores, locations, embedding)
+        pred_scores = self.compute_anomaly_score(patch_scores, locations, embedding, width=width)
 
         anomaly_maps = self.anomaly_map_generator(
             patch_scores.reshape(batch_size, 1, height, width), image_size=self.input_size
         )
         # Per time frame score: mean of the five strongest frequency responses.
         return anomaly_maps, pred_scores, temporal_topk_scores(anomaly_maps)
+
+    def _band_offsets(self) -> list[int]:
+        sizes = self.band_bank_sizes.tolist()
+        return [sum(sizes[:band]) for band in range(len(sizes) + 1)]
+
+    def _patch_scores(self, embedding_map: Tensor) -> tuple[Tensor, Tensor]:
+        """Distance of every patch to its nearest memory-bank patch and the bank index, both ``(B, H, W)``."""
+        batch_size, channels, height, width = embedding_map.shape
+        if self.band_bank_sizes.numel() == 0:
+            scores, locations = self.nearest_neighbors(self.reshape_embedding(embedding_map), n_neighbors=1)
+            return scores.reshape(batch_size, height, width), locations.reshape(batch_size, height, width)
+
+        if width != self.band_bank_sizes.numel():
+            raise ValueError(
+                f"The memory banks were built for {self.band_bank_sizes.numel()} frequency bands "
+                f"but the feature map has {width}"
+            )
+        offsets = self._band_offsets()
+        scores = embedding_map.new_empty(batch_size, height, width)
+        locations = torch.empty(batch_size, height, width, dtype=torch.long, device=embedding_map.device)
+        for band in range(width):
+            queries = embedding_map[:, :, :, band].permute(0, 2, 1).reshape(-1, channels)
+            bank = self.memory_bank[offsets[band] : offsets[band + 1]]
+            band_scores, band_locations = self._search(queries, bank, 1)
+            scores[:, :, band] = band_scores.reshape(batch_size, height)
+            locations[:, :, band] = (band_locations + offsets[band]).reshape(batch_size, height)
+        return scores, locations
 
     @staticmethod
     def reshape_embedding(embedding: Tensor) -> Tensor:
@@ -194,13 +285,16 @@ class PatchCore(AudioVADModel):
         return torch.cdist(x, y)
 
     def nearest_neighbors(self, embedding: Tensor, n_neighbors: int) -> tuple[Tensor, Tensor]:
-        """Distances and memory-bank indices of the nearest neighbours of each row.
+        """Distances and memory-bank indices of the nearest neighbours of each row (single bank)."""
+        return self._search(embedding, self.memory_bank, n_neighbors)
+
+    def _search(self, embedding: Tensor, bank: Tensor, n_neighbors: int) -> tuple[Tensor, Tensor]:
+        """Nearest neighbours of each row of ``embedding`` in ``bank``.
 
         The query is processed in chunks so that the distance matrix never exceeds
         ``DISTANCE_CHUNK_ELEMENTS`` entries, however many patches a batch has. If the GPU is
         shared and even that does not fit, the chunk is halved until it does.
         """
-        bank = self.memory_bank
         rows = max(1, self.DISTANCE_CHUNK_ELEMENTS // max(bank.shape[0], 1))
         scores, locations = [], []
         start = 0
@@ -224,9 +318,32 @@ class PatchCore(AudioVADModel):
             start += rows
         return torch.cat(scores), torch.cat(locations)
 
-    def compute_anomaly_score(self, patch_scores: Tensor, locations: Tensor, embedding: Tensor) -> Tensor:
-        """Image-level score of PatchCore (paper, section 3.3: re-weighting)."""
-        neighbors = min(self.num_neighbors, self.memory_bank.shape[0])
+    def _support_samples(self, nearest_sample: Tensor, neighbors: int, bands: Tensor | None) -> Tensor:
+        """Memory-bank indices of the ``neighbors`` nearest samples of each ``nearest_sample`` row.
+
+        With per-band banks the search stays inside the band of the patch that produced the sample.
+        """
+        if bands is None:
+            return self.nearest_neighbors(nearest_sample, n_neighbors=neighbors)[1]
+        offsets = self._band_offsets()
+        neighbors = min(neighbors, int(self.band_bank_sizes.min()))
+        support = torch.empty(nearest_sample.shape[0], neighbors, dtype=torch.long, device=nearest_sample.device)
+        for band in bands.unique().tolist():
+            rows = (bands == band).nonzero(as_tuple=True)[0]
+            bank = self.memory_bank[offsets[band] : offsets[band + 1]]
+            support[rows] = self._search(nearest_sample[rows], bank, neighbors)[1] + offsets[band]
+        return support
+
+    def compute_anomaly_score(
+        self, patch_scores: Tensor, locations: Tensor, embedding: Tensor, width: int | None = None
+    ) -> Tensor:
+        """Image-level score of PatchCore (paper, section 3.3: re-weighting).
+
+        ``width`` is the number of frequency bands of the feature map; it is only needed with
+        per-band banks, to find the band of the patch that gives the image score.
+        """
+        smallest_bank = int(self.band_bank_sizes.min()) if self.band_bank_sizes.numel() else self.memory_bank.shape[0]
+        neighbors = min(self.num_neighbors, smallest_bank)
         if neighbors <= 1:
             return patch_scores.amax(dim=1)
 
@@ -238,7 +355,8 @@ class PatchCore(AudioVADModel):
         score = patch_scores[rows, max_patches]
         # 2. its nearest neighbour in the bank (m^*) and the neighbours of that neighbour
         nearest_sample = self.memory_bank[locations[rows, max_patches]]
-        _, support = self.nearest_neighbors(nearest_sample, n_neighbors=neighbors)
+        bands = None if self.band_bank_sizes.numel() == 0 else max_patches % width
+        support = self._support_samples(nearest_sample, neighbors, bands)
         # 3. distance of the test patch to the support samples, softmax -> weight
         support_distances = torch.linalg.vector_norm(
             max_patch_features.unsqueeze(1) - self.memory_bank[support], dim=-1
@@ -247,18 +365,23 @@ class PatchCore(AudioVADModel):
         return weights * score
 
     # ---------------------------------------------------------- persistence
+    _SIZED_BUFFERS = ("memory_bank", "feature_mean", "feature_std", "band_bank_sizes", "score_mean", "score_std")
+    #: buffers that older checkpoints do not have
+    _OPTIONAL_BUFFERS = ("band_bank_sizes", "score_mean", "score_std")
+
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
-        # The buffer is registered empty; a fitted checkpoint has another shape.
-        for name in ("memory_bank", "feature_mean", "feature_std"):
+        # The buffers are registered empty; a fitted checkpoint has other shapes.
+        for name in self._SIZED_BUFFERS:
             key = prefix + name
             if key in state_dict and state_dict[key].shape != getattr(self, name).shape:
                 setattr(self, name, torch.empty_like(state_dict[key]))
         super()._load_from_state_dict(
             state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
         )
-        if not self.standardize_features:  # checkpoints from before the standardiser existed
-            optional = (prefix + "feature_mean", prefix + "feature_std")
-            missing_keys[:] = [key for key in missing_keys if key not in optional]
+        optional = [prefix + name for name in self._OPTIONAL_BUFFERS]
+        if not self.standardize_features:  # a checkpoint from before the feature standardiser existed
+            optional += [prefix + "feature_mean", prefix + "feature_std"]
+        missing_keys[:] = [key for key in missing_keys if key not in optional]
 
     def load_model(self, path):
         """Load a memory bank saved with ``save`` (or a bare ``{"memory_bank": tensor}`` dict)."""
@@ -269,6 +392,8 @@ class PatchCore(AudioVADModel):
 
     def reset_model(self):
         self.memory_bank = Tensor()
+        self.band_bank_sizes = torch.zeros(0, dtype=torch.long)
+        self.score_mean, self.score_std = Tensor(), Tensor()
 
     def get_model_size_and_macs(self):
         from moviad.utilities.get_sizes import (

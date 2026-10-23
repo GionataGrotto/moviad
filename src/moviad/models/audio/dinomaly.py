@@ -26,8 +26,15 @@ class AudioDinomaly(Dinomaly):
         image_size: tuple[int, int] = (224, 224),
         pretrained: bool = True,
         spectrogram_backbone: str = "Cnn14",
+        distance: str = "cosine",
     ) -> None:
+        """``distance`` is how encoder and decoder features are compared at test time: ``"cosine"``
+        (Dinomaly's own map, ``1 - cos``) or ``"l2"`` (euclidean norm of the difference, which keeps
+        the feature magnitude that the cosine discards)."""
         super().__init__(encoder_name=encoder_name, pretrained=pretrained)
+        if distance not in ("cosine", "l2"):
+            raise ValueError(f"distance must be 'cosine' or 'l2', got {distance!r}")
+        self.distance = distance
         self.device = torch.device(device)
         self.image_size = tuple(int(value) for value in image_size)
         if len(self.image_size) != 2 or min(self.image_size) <= 0:
@@ -115,7 +122,10 @@ class AudioDinomaly(Dinomaly):
 
     def forward(self, batch: torch.Tensor):
         image, original_size = self._to_image(batch)
-        output = super().forward(image)
+        if not self.training and self.distance == "l2":
+            output = (self._l2_map(image), None)
+        else:
+            output = super().forward(image)
 
         if self.training:
             # Dinomaly's training contract is (encoder_features, decoder_features).
@@ -140,6 +150,31 @@ class AudioDinomaly(Dinomaly):
         top_k = min(5, map_without_channel.shape[2])
         temporal_scores = map_without_channel.topk(top_k, dim=2).values.mean(dim=2)
         return anomaly_maps, anomaly_scores, temporal_scores
+
+    @torch.no_grad()
+    def _l2_map(self, image: torch.Tensor) -> torch.Tensor:
+        """Euclidean distance between encoder and decoder features, ``(B, H, W)`` at the image size.
+
+        The visual Dinomaly returns the encoder and decoder features when ``training`` is set and
+        builds its cosine map otherwise. Setting the flag on this module alone (not on its blocks,
+        which stay in eval mode, so dropout and similar layers remain off) gives access to the
+        features without duplicating the encoder-decoder pass.
+        """
+        self.training = True
+        try:
+            encoder_features, decoder_features = super().forward(image)
+        finally:
+            self.training = False
+        maps = [
+            F.interpolate(
+                torch.linalg.vector_norm(encoder - decoder, dim=1).unsqueeze(1),
+                size=image.shape[-2:],
+                mode="bilinear",
+                align_corners=True,
+            )
+            for encoder, decoder in zip(encoder_features, decoder_features)
+        ]
+        return torch.cat(maps, dim=1).mean(dim=1)
 
     def train_step(self, batch, training_args: DinomalyTrainArgs):
         if training_args.optimizer is None or training_args.lr_scheduler is None:

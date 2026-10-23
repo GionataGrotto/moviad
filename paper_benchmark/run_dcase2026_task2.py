@@ -11,6 +11,8 @@ import argparse
 import csv
 import json
 import sys
+import math
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -59,6 +61,22 @@ from moviad.datasets.dcase2026_task2 import (
 )
 
 
+_TOP_PERCENT = re.compile(r"^top(\d+(?:\.\d+)?)pct$")
+_BASIC_AGGREGATIONS = ("max", "mean", "temporal_topk_mean")
+
+
+def validate_aggregation(name: str) -> str:
+    """``max``, ``mean``, ``temporal_topk_mean`` or ``top<N>pct`` with 0 < N <= 100."""
+    if name in _BASIC_AGGREGATIONS:
+        return name
+    match = _TOP_PERCENT.match(name)
+    if match and 0 < float(match.group(1)) <= 100:
+        return name
+    raise argparse.ArgumentTypeError(
+        f"Unsupported DCASE score aggregation {name!r}: use max, mean, temporal_topk_mean or top<N>pct (0 < N <= 100)"
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -84,9 +102,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--score-aggregation",
-        choices=("max", "mean", "temporal_topk_mean"),
+        type=validate_aggregation,
         default=None,
-        help="DCASE-only file score aggregation; defaults to dcase2026.score_aggregation.",
+        help="DCASE-only file score aggregation: max, mean, temporal_topk_mean or top<N>pct "
+        "(mean of the highest N%% of the map, e.g. top5pct); defaults to dcase2026.score_aggregation.",
+    )
+    parser.add_argument(
+        "--extra-aggregations",
+        nargs="+",
+        type=validate_aggregation,
+        default=None,
+        help="More aggregations computed from the same trained model and written next to the main one "
+        "as <method>@<aggregation>; defaults to dcase2026.extra_aggregations.",
     )
     parser.add_argument(
         "--score-topk",
@@ -136,6 +163,12 @@ def _aggregate_dcase_score(output, aggregation: str, top_k: int = 5) -> np.ndarr
 
     if aggregation == "mean":
         return anomaly_map.mean(axis=(1, 2))
+    match = _TOP_PERCENT.match(aggregation)
+    if match:
+        # mean of the highest N% values of the whole map: between "max" (one patch) and "mean" (all)
+        values = anomaly_map.reshape(anomaly_map.shape[0], -1)
+        count = max(1, math.ceil(float(match.group(1)) / 100 * values.shape[1]))
+        return np.partition(values, values.shape[1] - count, axis=1)[:, -count:].mean(axis=1)
     if aggregation == "temporal_topk_mean":
         if top_k <= 0:
             raise ValueError(f"score_topk must be positive, got {top_k}")
@@ -147,15 +180,21 @@ def _aggregate_dcase_score(output, aggregation: str, top_k: int = 5) -> np.ndarr
     raise ValueError(f"Unsupported DCASE score aggregation: {aggregation}")
 
 
-def _score_model(
+def _score_model_multi(
     model,
     loader,
     device,
     max_batches: int | None = None,
-    aggregation: str = "temporal_topk_mean",
+    aggregations: tuple[str, ...] = ("temporal_topk_mean",),
     top_k: int = 5,
 ):
-    scores, labels, paths = [], [], []
+    """Score a loader once and aggregate every output with each of ``aggregations``.
+
+    Returns ``({aggregation: scores}, labels, paths)``; the forward pass, which is the costly part,
+    is shared by all aggregations.
+    """
+    scores = {aggregation: [] for aggregation in aggregations}
+    labels, paths = [], []
     model.eval()
     with torch.no_grad():
         for batch_index, batch in enumerate(loader):
@@ -172,17 +211,30 @@ def _score_model(
             else:
                 waveform, label, batch_paths = batch
             output = model(waveform.to(device))
-            score = _aggregate_dcase_score(output, aggregation, top_k)
-            score = score.tolist()
-            scores.extend(score)
+            for aggregation in aggregations:
+                batch_scores = _aggregate_dcase_score(output, aggregation, top_k).tolist()
+                scores[aggregation].extend(batch_scores)
+            count = len(batch_scores)
             if label is not None:
                 labels.extend(label.reshape(-1).tolist())
             if batch_paths is not None:
                 paths.extend(batch_paths)
             else:
                 start = len(paths)
-                paths.extend(f"train_{start + index:06d}.wav" for index in range(len(score)))
-    return np.asarray(scores, dtype=float), np.asarray(labels, dtype=int), paths
+                paths.extend(f"train_{start + index:06d}.wav" for index in range(count))
+    return {a: np.asarray(v, dtype=float) for a, v in scores.items()}, np.asarray(labels, dtype=int), paths
+
+
+def _score_model(
+    model,
+    loader,
+    device,
+    max_batches: int | None = None,
+    aggregation: str = "temporal_topk_mean",
+    top_k: int = 5,
+):
+    scores, labels, paths = _score_model_multi(model, loader, device, max_batches, (aggregation,), top_k)
+    return scores[aggregation], labels, paths
 
 
 def _write_pairs(path: Path, filenames, values) -> None:
@@ -296,14 +348,22 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
         if args.score_topk is not None
         else int(dcase_config.get("score_topk", 5))
     )
+    extra_aggregations = [
+        a for a in (args.extra_aggregations or dcase_config.get("extra_aggregations", [])) if a != aggregation
+    ]
+    for name in extra_aggregations:
+        validate_aggregation(name)
+    all_aggregations = (aggregation, *dict.fromkeys(extra_aggregations))
     train_score_loader = DataLoader(train_ds, batch_size=int(config["batch_size"]), shuffle=False, num_workers=int(config["num_workers"]))
-    train_scores, _, _ = _score_model(
-        model, train_score_loader, device, max_batches, aggregation, top_k
+    train_by_aggregation, _, _ = _score_model_multi(
+        model, train_score_loader, device, max_batches, all_aggregations, top_k
     )
+    train_scores = train_by_aggregation[aggregation]
     train_paths = [str(record.path) for record in train_ds.records[:len(train_scores)]]
-    test_scores, labels, test_paths = _score_model(
-        model, test_loader, device, max_batches, aggregation, top_k
+    test_by_aggregation, labels, test_paths = _score_model_multi(
+        model, test_loader, device, max_batches, all_aggregations, top_k
     )
+    test_scores = test_by_aggregation[aggregation]
     threshold = None
     decisions = None
     if args.write_decisions:
@@ -333,6 +393,10 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
         "run_name": dcase.get("run_name"),
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     })
+    if len(all_aggregations) > 1 and len(np.unique(labels)) == 2:
+        result["extra_aggregations"] = {
+            name: _metrics(test_by_aggregation[name], labels, domains) for name in all_aggregations[1:]
+        }
 
     team_dir = evaluator_root / "teams" / "moviad" / method
     _write_pairs(
@@ -343,6 +407,12 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     _write_pairs(team_dir / f"anomaly_score_{machine}_section_00_test.csv", test_paths, test_scores)
     if decisions is not None:
         _write_pairs(team_dir / f"decision_result_{machine}_section_00_test.csv", test_paths, decisions)
+    for name in all_aggregations[1:]:
+        extra_dir = evaluator_root / "teams" / "moviad" / f"{method}@{name}"
+        _write_pairs(
+            extra_dir / f"train_anomaly_score_{machine}_section_00_train.csv", train_paths, train_by_aggregation[name]
+        )
+        _write_pairs(extra_dir / f"anomaly_score_{machine}_section_00_test.csv", test_paths, test_by_aggregation[name])
     _write_dev_ground_truth(dataset_path, evaluator_root, machine, test_paths)
     return result
 

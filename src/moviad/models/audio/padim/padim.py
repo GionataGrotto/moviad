@@ -8,6 +8,12 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from moviad.models.audio.audio_vad_model import AudioVADModel
+from moviad.models.audio.components.band_scores import (
+    BandScoreStats,
+    holdout_period,
+    is_holdout,
+    standardize_by_band,
+)
 from moviad.models.audio.components.feature_ops import (
     fuse_feature_maps,
     gaussian_smooth,
@@ -78,6 +84,22 @@ def idx_to_layer_name(backbone_model_name, idx: Union[Tuple, List]):
         return tuple(f"features.{i}" for i in idx)
     else:
         return idx
+
+
+def precision_matrices(covariances: torch.Tensor) -> torch.Tensor:
+    """Inverses of a batch of covariance matrices ``(N, C, C)``, computed in float64.
+
+    A covariance with the diagonal regularisation PaDiM adds is symmetric positive definite, so the
+    Cholesky factorisation is used: it is cheaper than a general LU inverse and numerically gentler.
+    (``torch.linalg.inv`` on batches of double matrices failed on some CPU builds with matrices that
+    are perfectly well conditioned.) If a matrix is not positive definite, the general inverse is the
+    fallback.
+    """
+    covariances = covariances.double().contiguous()
+    factor, info = torch.linalg.cholesky_ex(covariances)
+    if bool((info == 0).all()):
+        return torch.cholesky_inverse(factor)
+    return torch.linalg.inv(covariances)
 
 
 class GaussianAccumulator:
@@ -154,6 +176,9 @@ class Padim(AudioVADModel):
         "covariance_reg",
         "layers_idxs",
         "fit_grid",
+        "per_band",
+        "score_mean",
+        "score_std",
     ]
 
     def __init__(
@@ -167,6 +192,9 @@ class Padim(AudioVADModel):
         backbone_model=None,
         embedding_dim=None,
         covariance_reg=0.01,
+        per_band=False,
+        score_standardization="none",
+        holdout_fraction=0.1,
     ):
         """
         Args:
@@ -177,12 +205,26 @@ class Padim(AudioVADModel):
             img_size: (height, width) the anomaly map is upsampled to; ``None`` keeps
                 the input spectrogram size (or the embedding grid for waveform inputs).
             embedding_dim: size of the random channel subset (default from ``EMBEDDING_SIZES``).
+            per_band: one Gaussian per frequency position, shared by all time frames, instead of one
+                per (time, frequency) patch. Stationary machine sounds have no meaningful absolute
+                time, so this multiplies the samples of every Gaussian by the number of frames,
+                conditions the covariance, and lets clips of any duration be scored.
+            score_standardization: ``"band"`` standardises the distances of every frequency band with
+                the mean / std of held-out normal clips (``holdout_fraction`` of the training batches,
+                excluded from the Gaussians); ``"none"`` leaves them untouched.
         """
         super().__init__(
             feature_extractor=backbone_model,
             input_size=img_size,
             device=device,
         )
+        if score_standardization not in ("none", "band"):
+            raise ValueError(f"score_standardization must be 'none' or 'band', got {score_standardization!r}")
+        self.per_band = per_band
+        self.score_standardization = score_standardization
+        self.holdout_fraction = holdout_fraction
+        self.score_mean = None
+        self.score_std = None
         self.class_name = class_name
         self.diag_cov = diag_cov
         self.covariance_reg = float(covariance_reg)
@@ -229,6 +271,8 @@ class Padim(AudioVADModel):
         self.gauss_mean = None
         self.gauss_cov = None
         self.fit_grid = None
+        self.score_mean = None
+        self.score_std = None
 
     # ------------------------------------------------------------ backbone
     def load_backbone(self, backbone_model):
@@ -316,18 +360,47 @@ class Padim(AudioVADModel):
         return self._project(fuse_feature_maps(maps))
 
     # ----------------------------------------------------------------- fit
+    def _statistics_view(self, embedding: torch.Tensor) -> torch.Tensor:
+        """The embedding as the Gaussians see it.
+
+        Per patch: unchanged. Per band: the time frames become extra samples, ``(B*H, C, 1, W)``.
+        """
+        if not self.per_band:
+            return embedding
+        batch, channels, height, width = embedding.shape
+        return embedding.permute(0, 2, 1, 3).reshape(batch * height, channels, 1, width)
+
     def fit(self, train_dataloader, progress: bool = True) -> None:
-        """Fit the per-patch Gaussians in one streaming pass, one batch in memory at a time."""
+        """Fit the Gaussians in one streaming pass, one batch in memory at a time."""
         accumulator = GaussianAccumulator(full_covariance=not self.diag_cov)
+        standardize = self.score_standardization == "band"
+        period = holdout_period(self.holdout_fraction) if standardize else None
+        held_out: list[torch.Tensor] = []
         batches = tqdm(train_dataloader, f"| PaDiM fit | {self.class_name} |") if progress else train_dataloader
-        for batch in batches:
-            accumulator.update(self.embed(self.batch_input(batch)))
+        for index, batch in enumerate(batches):
+            embedding = self.embed(self.batch_input(batch))
+            if period and is_holdout(index, period):
+                held_out.append(embedding.cpu())
+                continue
+            accumulator.update(self._statistics_view(embedding))
         self._store_gaussian(accumulator)
+        if standardize:
+            self._fit_score_statistics(held_out)
+        else:
+            self.score_mean = self.score_std = None
+
+    @torch.no_grad()
+    def _fit_score_statistics(self, held_out: list[torch.Tensor]) -> None:
+        """Per-band mean / std of the distances of normal clips that the Gaussians were not fitted on."""
+        statistics = BandScoreStats()
+        for embedding in held_out:
+            statistics.update(self.compute_distances(embedding.to(self.device)))
+        self.score_mean, self.score_std = (value.cpu() for value in statistics.finalize())
 
     def fit_multivariate_gaussian(self, embedding_vectors, update_params):
         """Fit the Gaussians on an in-memory ``(B, C, H, W)`` embedding tensor."""
         accumulator = GaussianAccumulator(full_covariance=not self.diag_cov)
-        accumulator.update(embedding_vectors)
+        accumulator.update(self._statistics_view(embedding_vectors))
         if update_params:
             self._store_gaussian(accumulator)
             return self.gauss_mean, self.gauss_cov
@@ -357,7 +430,7 @@ class Padim(AudioVADModel):
                 precision = 1.0 / covariance.clamp_min(1e-12)  # (C, P)
             else:
                 # (C, C, P) -> (P, C, C), inverted once in float64 instead of on every batch
-                precision = torch.linalg.inv(covariance.permute(2, 0, 1).double()).float()
+                precision = precision_matrices(covariance.permute(2, 0, 1)).float()
             self._inference_cache[device] = (mean, precision)
         return self._inference_cache[device]
 
@@ -370,6 +443,8 @@ class Padim(AudioVADModel):
         """
         mean, precision = self._fitted_statistics(embedding_vectors.device)
         batch, channels, height, width = embedding_vectors.shape
+        if self.per_band:
+            return self._band_distances(embedding_vectors, mean, precision)
         fitted_patches = mean.shape[1]
         fit_grid = tuple(self.fit_grid) if self.fit_grid is not None else None
         if fit_grid is not None and fit_grid[0] * fit_grid[1] != fitted_patches:
@@ -404,12 +479,30 @@ class Padim(AudioVADModel):
             squared = (transformed * delta.transpose(1, 2)).sum(dim=2)
         return squared.clamp_min(0).sqrt().reshape(batch, height, width)
 
+    @staticmethod
+    def _band_distances(embedding: torch.Tensor, mean: torch.Tensor, precision: torch.Tensor) -> torch.Tensor:
+        """Mahalanobis distance to the Gaussian of the patch's frequency band, ``(B, H, W)``; time is free."""
+        batch, channels, height, width = embedding.shape
+        if width != mean.shape[1]:
+            raise ValueError(
+                f"PaDiM was fitted on {mean.shape[1]} frequency bands but the embedding has {width}"
+            )
+        delta = embedding.float() - mean.view(1, channels, 1, width)
+        if precision.ndim == 2:
+            squared = (delta * delta * precision.view(1, channels, 1, width)).sum(dim=1)
+        else:
+            transformed = torch.einsum("bchw,wcd->bhwd", delta, precision)
+            squared = (transformed * delta.permute(0, 2, 3, 1)).sum(dim=-1)
+        return squared.clamp_min(0).sqrt()
+
     def forward(self, x):
         if self.training:
             # raw feature maps, kept for the legacy two-step fit (extract -> embed -> fit)
             return {layer: [maps.cpu()] for layer, maps in zip(self.layers_idxs, self._extract(x))}
 
         distances = self.compute_distances(self.embed(x))
+        if self.score_mean is not None:
+            distances = standardize_by_band(distances, self.score_mean, self.score_std)
         output_size = self.resolve_output_size(x, distances)
         score_map = F.interpolate(
             distances.unsqueeze(1), size=output_size, mode="bilinear", align_corners=False

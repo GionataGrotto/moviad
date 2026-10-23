@@ -309,6 +309,26 @@ quest'ordine: `beats_layers` (quali blocchi: 8-10-12, 4-6-8, solo 12, solo 10, 1
 `beats_search` li lancia tutti. In fondo a `grid_summary.md` la tabella indica il migliore per metodo.
 Per confermare la scelta finale ripeti il migliore con altri seed (`--seed`, `--run-suffix`).
 
+**Idee per banda e aggregazioni** (preset `band_search`; `band_full` aggiunge i riferimenti rilanciati con lo
+stesso codice). Si basano sul fatto che per l'audio conta la banda di frequenza, non il tempo assoluto:
+- `band_pc_banks`: PatchCore con una memoria per banda (la memoria totale e' divisa tra le bande), cosi' una
+  patch si confronta solo con patch normali della propria banda.
+- `band_pc_std`, `band_pc_banks_std`: standardizzazione dei punteggi per banda con media e deviazione di clip
+  normali tenuti da parte (il 10% dei batch di training, esclusi dalla memoria: i punteggi dei clip della
+  memoria sono quasi zero e falserebbero le statistiche; `score_std_holdout` cambia la quota).
+- `band_padim_gauss`, `band_padim_gauss_full`, `band_padim_gauss_full_std`: PaDiM con una gaussiana per banda
+  condivisa da tutti i frame (invece di una per posizione tempo-frequenza): 990 volte piu' campioni per
+  gaussiana, covarianza completa ben condizionata, clip di qualsiasi durata. La covarianza completa e' l'unica
+  variante che aveva aiutato PaDiM.
+- `dinomaly_l2`: Dinomaly con distanza L2 al posto del coseno tra feature di encoder e decoder.
+- `--aggregation-sweep` calcola dallo stesso modello addestrato anche `max`, `mean`, `top5pct` e `top10pct`
+  (media del 5% / 10% dei valori piu' alti della mappa); compaiono come colonne `metodo@aggregazione` nel
+  riepilogo. Si possono scegliere altre con `--extra-aggregations` (qualsiasi `top<N>pct`).
+
+```bash
+uv run python paper_benchmark/run_dcase_grid.py --base-config paper_benchmark/config.knn.json --methods patchcore padim --preset band_full --aggregation-sweep
+```
+
 `diagnose_signal_features.py --dataset-path <DCASE>` calcola per macchina l'AUC di semplici statistiche
 del segnale (RMS, centroide spettrale, piattezza, quota di alte frequenze): serve a capire se un'inversione
 sistematica (AUC sotto 0,5) dipende dall'energia del clip.

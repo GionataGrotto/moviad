@@ -63,3 +63,15 @@ def test_summary_detail_lists_every_machine_of_every_run(tmp_path):
     assert cells[grid.MACHINES.index("fan")] == "1.000" and cells[grid.MACHINES.index("ToyCar")] == "0.000"
     assert cells[grid.MACHINES.index("valveEmu")] == "-"  # a machine that was not run
     assert cells[-2] == "0.500"  # mean AUC of the two machines run
+
+
+def test_skip_done_only_keeps_the_methods_without_all_seven_machines(tmp_path):
+    base = tmp_path / "dcase2026_task2_evaluator" / "dev" / "grid_baseline" / "teams" / "moviad"
+    for machine in grid.MACHINES:  # padim: complete
+        write_scores(base / "padim", machine, [("normal", 0.1), ("normal", 0.2), ("anomaly", 0.8), ("anomaly", 0.9)])
+    for machine in grid.MACHINES[:3]:  # cfa: interrupted after 3 machines
+        write_scores(base / "cfa", machine, [("normal", 0.1), ("normal", 0.2), ("anomaly", 0.8), ("anomaly", 0.9)])
+
+    pending = grid.pending_methods("baseline", ["padim", "cfa", "patchcore"], root=tmp_path)
+
+    assert pending == ["cfa", "patchcore"]  # complete padim is skipped, partial cfa and missing patchcore run

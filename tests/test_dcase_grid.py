@@ -188,3 +188,64 @@ def test_best_per_method_ignores_incomplete_runs():
     }
     best = grid.best_per_method(table, ["a", "b", "c"], ["padim", "cfa", "patchcore"])
     assert best == {"padim": ("c", 0.55), "cfa": ("b", 0.58)}  # the 5-machine 0.60 does not count
+
+
+def test_skip_done_flag_drops_complete_pairs_from_the_commands(tmp_path, monkeypatch, capsys):
+    config = tmp_path / "base.json"
+    config.write_text(json.dumps({"dcase2026": {"dataset_path": str(tmp_path)}}))
+    monkeypatch.setattr(grid, "pending_methods", lambda name, methods, suffix="", root=grid.ROOT: [m for m in methods if m != "padim"])
+    monkeypatch.setattr("sys.argv", ["run_dcase_grid.py", "--base-config", str(config), "--methods", "patchcore", "padim", "cfa",
+                                     "--experiments", "beats_late", "--skip-done", "--dry-run"])
+
+    grid.main()
+
+    output = capsys.readouterr().out
+    assert "--methods patchcore cfa" in output and "padim" not in output.split("$")[1]
+    assert "already complete for ['padim']" in output
+
+
+def test_band_experiments_build_on_beats_late_and_change_one_thing():
+    base = {"dcase2026": {"dataset_path": "/data"}}
+    for name in ("band_pc_banks", "band_pc_std", "band_pc_banks_std", "band_padim_gauss",
+                 "band_padim_gauss_full", "band_padim_gauss_full_std"):
+        config = grid.build_config(base, name, 30)
+        assert config["backbone"] == "BEATs" and config["layers"] == [8, 10, 12]
+    assert grid.build_config(base, "band_pc_banks", 30)["patchcore_band_banks"] is True
+    assert grid.build_config(base, "band_pc_std", 30)["patchcore_score_std"] == "band"
+    both = grid.build_config(base, "band_pc_banks_std", 30)
+    assert both["patchcore_band_banks"] is True and both["patchcore_score_std"] == "band"
+    assert grid.build_config(base, "band_padim_gauss", 30)["padim_per_band"] is True
+    full = grid.build_config(base, "band_padim_gauss_full", 30)
+    assert full["padim_per_band"] is True and full["padim_diag_cov"] is False
+    assert grid.build_config(base, "band_padim_gauss_full_std", 30)["padim_score_std"] == "band"
+    assert grid.build_config(base, "dinomaly_l2", 30)["dinomaly_distance"] == "l2"
+    assert grid.methods_for("band_pc_std", ["patchcore", "padim", "cfa"]) == ["patchcore"]
+    assert grid.methods_for("band_padim_gauss_full", ["patchcore", "padim", "cfa"]) == ["padim"]
+    assert grid.methods_for("dinomaly_l2", ["patchcore", "dinomaly"]) == ["dinomaly"]
+    assert grid.PRESETS["band_search"] == [
+        "band_pc_banks", "band_pc_std", "band_pc_banks_std", "band_padim_gauss", "band_padim_gauss_full", "band_padim_gauss_full_std",
+    ]
+
+
+def test_extra_aggregations_reach_the_config_and_the_summary_columns():
+    base = {"dcase2026": {"dataset_path": "/data"}}
+    config = grid.build_config(base, "baseline", 30, extra_aggregations=("max", "mean", "temporal_topk_mean"))
+    assert config["dcase2026"]["extra_aggregations"] == ["max", "mean"]  # the primary one is not repeated
+    assert "extra_aggregations" not in grid.build_config(base, "baseline", 30)["dcase2026"]
+
+    assert grid.summary_labels(["patchcore", "padim"], ("max", "top5pct")) == [
+        "patchcore", "padim", "patchcore@max", "patchcore@top5pct", "padim@max", "padim@top5pct",
+    ]
+    assert grid.summary_labels(["cfa"]) == ["cfa"]
+
+
+def test_aggregation_sweep_flag_writes_the_extra_aggregations_into_the_configs(tmp_path, monkeypatch, capsys):
+    config = tmp_path / "base.json"
+    config.write_text(json.dumps({"dcase2026": {"dataset_path": str(tmp_path)}}))
+    monkeypatch.setattr("sys.argv", ["run_dcase_grid.py", "--base-config", str(config), "--methods", "patchcore",
+                                     "--experiments", "baseline", "--aggregation-sweep", "--dry-run"])
+
+    grid.main()
+
+    written = json.loads((grid.ROOT / "paper_benchmark" / "grid_configs" / "config.grid_baseline.json").read_text())
+    assert written["dcase2026"]["extra_aggregations"] == ["max", "mean", "top5pct", "top10pct"]
