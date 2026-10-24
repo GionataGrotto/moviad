@@ -8,6 +8,16 @@ from torch.utils.data import DataLoader
 from moviad.models.audio.stfpm.stfpm import STFPM
 from moviad.utilities.evaluator import Evaluator
 
+def build_optimizer(parameters, name: str = "sgd", learning_rate: float = 0.4, weight_decay: float = 1e-4):
+    """The STFPM paper uses SGD with momentum and lr 0.4 for CNN students on images. A pretrained
+    transformer student needs AdamW and a learning rate several orders of magnitude lower."""
+    if name == "sgd":
+        return torch.optim.SGD(parameters, learning_rate, momentum=0.9, weight_decay=weight_decay)
+    if name == "adamw":
+        return torch.optim.AdamW(parameters, lr=learning_rate, weight_decay=weight_decay)
+    raise ValueError(f"Unsupported STFPM optimizer {name!r}: use 'sgd' or 'adamw'")
+
+
 class TrainerSTFPM:
 
     """
@@ -27,12 +37,18 @@ class TrainerSTFPM:
         test_dataloder: torch.utils.data.DataLoader,
         wandb: bool, 
         device: str,
+        optimizer: str = "sgd",
+        learning_rate: float = 0.4,
+        weight_decay: float = 1e-4,
     ):
         self.stfpm = stfpm
         self.train_dataloader = train_dataloader
         self.test_dataloader = test_dataloder
         self.device = device
         self.wandb = wandb
+        self.optimizer_name = optimizer
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
         self.evaluator = (
             Evaluator(self.test_dataloader, self.device)
             if self.test_dataloader is not None
@@ -69,7 +85,9 @@ class TrainerSTFPM:
         
         self.stfpm.to(self.device)
 
-        optimizer = torch.optim.SGD(self.stfpm.student.model.parameters(), 0.4, momentum=0.9, weight_decay=1e-4)
+        optimizer = build_optimizer(
+            self.stfpm.student.model.parameters(), self.optimizer_name, self.learning_rate, self.weight_decay
+        )
 
         best_metrics = {}
         for metric in metrics_to_compute:
@@ -86,7 +104,7 @@ class TrainerSTFPM:
             #train the model
             for batch in tqdm(self.train_dataloader): 
 
-                batch = batch.to(self.device)
+                batch = self.stfpm.batch_input(batch).to(self.device)
                 teacher_features, student_features = self.stfpm(batch)
 
                 loss = 0

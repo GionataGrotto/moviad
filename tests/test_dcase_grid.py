@@ -249,3 +249,17 @@ def test_aggregation_sweep_flag_writes_the_extra_aggregations_into_the_configs(t
 
     written = json.loads((grid.ROOT / "paper_benchmark" / "grid_configs" / "config.grid_baseline.json").read_text())
     assert written["dcase2026"]["extra_aggregations"] == ["max", "mean", "top5pct", "top10pct"]
+
+
+def test_stfpm_experiments_set_the_optimizer_and_only_run_stfpm():
+    base = {"dcase2026": {"dataset_path": "/data"}}
+    assert grid.build_config(base, "stfpm_sgd_lr0p1", 30)["stfpm_lr"] == 0.1
+    assert grid.build_config(base, "stfpm_sgd_lr0p02", 30)["stfpm_lr"] == 0.02
+    adamw = grid.build_config(base, "stfpm_adamw_1e4", 30)
+    assert adamw["stfpm_optimizer"] == "adamw" and adamw["stfpm_lr"] == 1e-4 and adamw["backbone"] == "Cnn14"
+    late = grid.build_config(base, "stfpm_beats_late_adamw_1e5", 30)
+    assert late["backbone"] == "BEATs" and late["layers"] == [8, 10, 12] and late["stfpm_lr"] == 1e-5
+    assert grid.build_config(base, "stfpm_beats_b12_adamw_1e5", 30)["layers"] == [12]
+    for name in ("stfpm_sgd_lr0p1", "stfpm_adamw_1e4", "stfpm_beats_late_adamw_1e4"):
+        assert grid.methods_for(name, ["patchcore", "stfpm", "cfa"]) == ["stfpm"]
+    assert "baseline" in grid.PRESETS["stfpm_search"] and "layers_deep" in grid.PRESETS["stfpm_search"]

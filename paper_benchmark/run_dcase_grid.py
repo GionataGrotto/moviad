@@ -96,6 +96,16 @@ EXPERIMENTS = {
                               {**BEATS_LATE, "padim_per_band": True, "padim_diag_cov": False}, {"padim"}),
     "band_padim_gauss_full_std": ("PaDiM, per-band full Gaussians + score standardisation",
                                   {**BEATS_LATE, "padim_per_band": True, "padim_diag_cov": False, "padim_score_std": "band"}, {"padim"}),
+    # ---- STFPM: optimiser and BEATs student (the trainer used to hard-code SGD with lr 0.4) ----
+    "stfpm_sgd_lr0p1": ("STFPM, SGD lr 0.1", {"stfpm_lr": 0.1}, {"stfpm"}),
+    "stfpm_sgd_lr0p02": ("STFPM, SGD lr 0.02", {"stfpm_lr": 0.02}, {"stfpm"}),
+    "stfpm_adamw_1e4": ("STFPM, AdamW lr 1e-4", {"stfpm_optimizer": "adamw", "stfpm_lr": 1e-4}, {"stfpm"}),
+    "stfpm_beats_late_adamw_1e5": ("STFPM on BEATs 8,10,12, AdamW lr 1e-5",
+                                   {**BEATS_LATE, "stfpm_optimizer": "adamw", "stfpm_lr": 1e-5}, {"stfpm"}),
+    "stfpm_beats_late_adamw_1e4": ("STFPM on BEATs 8,10,12, AdamW lr 1e-4",
+                                   {**BEATS_LATE, "stfpm_optimizer": "adamw", "stfpm_lr": 1e-4}, {"stfpm"}),
+    "stfpm_beats_b12_adamw_1e5": ("STFPM on BEATs block 12, AdamW lr 1e-5",
+                                  {"backbone": "BEATs", "layers": [12], "stfpm_optimizer": "adamw", "stfpm_lr": 1e-5}, {"stfpm"}),
     "dinomaly_l2": ("Dinomaly, L2 distance instead of cosine", {"dinomaly_distance": "l2"}, {"dinomaly"}),
     "agg_mean": ("score = mean of the anomaly map", {"dcase2026": {"score_aggregation": "mean"}}, None),
 }
@@ -111,6 +121,11 @@ PRESETS["band_search"] = [
     "band_padim_gauss", "band_padim_gauss_full", "band_padim_gauss_full_std",
 ]
 #: the band ideas next to their references (beats_late for PatchCore, full covariance for PaDiM), rerun with the same code
+#: STFPM: optimiser and layers on Cnn14, then a BEATs student; use with --methods stfpm
+PRESETS["stfpm_search"] = [
+    "baseline", "stfpm_sgd_lr0p1", "stfpm_sgd_lr0p02", "stfpm_adamw_1e4", "layers_fine", "layers_deep",
+    "stfpm_beats_late_adamw_1e5", "stfpm_beats_late_adamw_1e4", "stfpm_beats_b12_adamw_1e5",
+]
 PRESETS["band_full"] = ["beats_late", "beats_padim_full_cov"] + PRESETS["band_search"]
 #: aggregations compared from the same trained model by --aggregation-sweep
 AGGREGATION_SWEEP = ["max", "mean", "top5pct", "top10pct"]

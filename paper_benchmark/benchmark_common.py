@@ -58,6 +58,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "patchcore_standardize": False,
     "patchcore_num_neighbors": 9,
     "stfpm_student_pretrained": True,
+    "stfpm_optimizer": "sgd",
+    "stfpm_lr": 0.4,
     "clap_checkpoint": None,
     "knn_beats_checkpoint": None,
     "knn_beats_code_dir": None,
@@ -600,7 +602,10 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
         from moviad.trainers.audio.trainer_stfpm import TrainerSTFPM
 
         eval_iter = limited(test_loader, debug, max_batches) if evaluate_during_training else None
-        trainer = TrainerSTFPM(model, train_iter, eval_iter, wandb=False, device=str(device))
+        trainer = TrainerSTFPM(
+            model, train_iter, eval_iter, wandb=False, device=str(device),
+            optimizer=config.get("stfpm_optimizer", "sgd"), learning_rate=float(config.get("stfpm_lr", 0.4)),
+        )
         trainer.train(
             int(config.get("epochs", 1)),
             ["f1_img", "img_roc_auc", "pr_auc_img"] if evaluate_during_training else [],

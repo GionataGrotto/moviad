@@ -180,3 +180,30 @@ def test_benchmark_helpers_understand_the_beats_backbone(fake_beats, tmp_path):
         common.check_audio_checkpoint({"backbone": "BEATs", "beats_checkpoint": str(tmp_path / "x.pt")}, ["padim"])
     with pytest.raises(ValueError, match="not to BEATs"):
         common.attach_spectrogram_preprocessing("patchcore", object(), [], {**config, "spec_band_norm": "zscore"}, torch.device("cpu"))
+
+
+def test_stfpm_trains_a_pretrained_beats_student_with_the_configured_optimizer(fake_beats, monkeypatch):
+    from moviad.trainers.audio import trainer_stfpm
+
+    code_dir, checkpoint, _ = fake_beats
+    config = make_beats_config(code_dir, checkpoint, (6, 12))
+    config.update(stfpm_optimizer="adamw", stfpm_lr=1e-3, epochs=2, stfpm_student_pretrained=True)
+    recorded = []
+    original = trainer_stfpm.build_optimizer
+    monkeypatch.setattr(
+        trainer_stfpm, "build_optimizer", lambda *args, **kwargs: recorded.append(args[1:]) or original(*args, **kwargs)
+    )
+    input_size = BEATsFeatureExtractor.fbank_shape(SAMPLES)
+    model = common.make_model("stfpm", config, torch.device("cpu"), input_size, "fan")
+    before = model.student.model.encoder.layers[0].linear.weight.clone()
+
+    common.fit_model("stfpm", model, waveform_loader(), None, config, torch.device("cpu"), False, evaluate_during_training=False)
+
+    assert recorded == [("adamw", 1e-3, 1e-4)]  # optimizer, learning rate and weight decay reach the trainer
+    assert not torch.equal(model.student.model.encoder.layers[0].linear.weight, before)  # the student learned
+    assert torch.equal(
+        model.teacher.model.encoder.layers[0].linear.weight, model.teacher.model.encoder.layers[0].linear.weight
+    ) and not model.teacher.model.training  # the teacher stays frozen in eval mode
+    model.eval()
+    maps, scores, temporal = model(torch.randn(2, SAMPLES))
+    assert maps.shape == (2, 1, *input_size) and torch.isfinite(scores).all() and temporal.shape == (2, input_size[0])

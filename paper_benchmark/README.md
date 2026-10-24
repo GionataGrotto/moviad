@@ -329,6 +329,17 @@ stesso codice). Si basano sul fatto che per l'audio conta la banda di frequenza,
 uv run python paper_benchmark/run_dcase_grid.py --base-config paper_benchmark/config.knn.json --methods patchcore padim --preset band_full --aggregation-sweep
 ```
 
+**STFPM** (preset `stfpm_search`, da usare con `--methods stfpm`). Il trainer usava sempre SGD con learning
+rate 0,4, la scelta del paper per studenti CNN su immagini; ora `stfpm_optimizer` (`sgd` o `adamw`) e
+`stfpm_lr` sono nel config. Esperimenti: `baseline` (riferimento), `stfpm_sgd_lr0p1`, `stfpm_sgd_lr0p02`,
+`stfpm_adamw_1e4` (studente Cnn14 con learning rate piu' bassi), `layers_fine`, `layers_deep`, e con BEATs come
+backbone lo studente pre-addestrato con AdamW (`stfpm_beats_late_adamw_1e5`, `stfpm_beats_late_adamw_1e4`,
+`stfpm_beats_b12_adamw_1e5`: il learning rate di 0,4 farebbe divergere un ViT).
+
+```bash
+uv run python paper_benchmark/run_dcase_grid.py --base-config paper_benchmark/config.knn.json --methods stfpm --preset stfpm_search --aggregation-sweep --skip-done
+```
+
 `diagnose_signal_features.py --dataset-path <DCASE>` calcola per macchina l'AUC di semplici statistiche
 del segnale (RMS, centroide spettrale, piattezza, quota di alte frequenze): serve a capire se un'inversione
 sistematica (AUC sotto 0,5) dipende dall'energia del clip.
