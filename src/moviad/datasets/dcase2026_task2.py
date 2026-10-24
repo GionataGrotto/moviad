@@ -18,7 +18,7 @@ from torch.utils.data import Dataset
 
 FILENAME_RE = re.compile(
     r"^section_(?P<section>\d+)_(?P<domain>source|target)_"
-    r"(?P<split>train|test)_(?P<label>normal|anomaly)_.*\.wav$",
+    r"(?P<split>train|test)_(?P<label>normal|anomaly)_(?:\d+_)?(?P<attribute>.*)\.wav$",
     re.IGNORECASE,
 )
 
@@ -31,6 +31,7 @@ class DCASERecord:
     domain: str
     split: str
     label: int
+    attribute: str = ""
 
 
 def parse_dcase_filename(path: Path, machine_type: str) -> DCASERecord:
@@ -45,12 +46,32 @@ def parse_dcase_filename(path: Path, machine_type: str) -> DCASERecord:
         domain=groups["domain"].lower(),
         split=groups["split"].lower(),
         label=int(groups["label"].lower() == "anomaly"),
+        attribute=groups["attribute"],
     )
 
 
 def discover_machine_types(root: str | Path) -> list[str]:
     root = Path(root).expanduser()
     return sorted(path.name for path in root.iterdir() if path.is_dir())
+
+
+CHANNEL_MODES = ("diff", "ls", "ls_half")
+
+
+def ls_denoise(near: torch.Tensor, far: torch.Tensor, strength: float = 1.0, n_fft: int = 1024, eps: float = 1e-8) -> torch.Tensor:
+    """Remove from the near microphone what a per-frequency linear filter predicts from the far one.
+
+    The filter H(f) = sum(near * conj(far)) / sum(|far|^2) is the least-squares transfer function
+    of the whole clip, so the residual keeps the part of the near signal that the far microphone
+    cannot explain. ``strength`` < 1 subtracts only a fraction of the prediction. Risk: where the far
+    channel is the near sound filtered (the *Emu machines) the filter also removes the machine sound.
+    """
+    window = torch.hann_window(n_fft, device=near.device)
+    spec_near = torch.stft(near, n_fft, hop_length=n_fft // 4, window=window, return_complex=True)
+    spec_far = torch.stft(far, n_fft, hop_length=n_fft // 4, window=window, return_complex=True)
+    transfer = (spec_near * spec_far.conj()).sum(dim=-1, keepdim=True) / (spec_far.abs().pow(2).sum(dim=-1, keepdim=True) + eps)
+    residual = spec_near - strength * transfer * spec_far
+    return torch.istft(residual, n_fft, hop_length=n_fft // 4, window=window, length=near.shape[-1])
 
 
 class DCASE2026Task2Dataset(Dataset):
@@ -88,9 +109,10 @@ class DCASE2026Task2Dataset(Dataset):
         self.train_domains = train_domains.lower()
         # "diff" feeds the near-minus-far waveform (channel 0 - channel 1), which cancels
         # the noise that both microphones pick up.
-        self.channel = channel if channel == "diff" else int(channel)
-        if self.channel != "diff" and self.channel < 0:
-            raise ValueError("channel must be a non-negative index or 'diff'")
+        # "ls" / "ls_half" subtract the far microphone after a per-clip least-squares filter (see ls_denoise).
+        self.channel = channel if channel in CHANNEL_MODES else int(channel)
+        if self.channel not in CHANNEL_MODES and self.channel < 0:
+            raise ValueError("channel must be a non-negative index, 'diff', 'ls' or 'ls_half'")
         self.target_sample_rate = int(target_sample_rate)
         self._resampler = torchaudio.transforms.Resample(16000, self.target_sample_rate)
         if self.split not in {"train", "test"}:
@@ -139,10 +161,13 @@ class DCASE2026Task2Dataset(Dataset):
         waveform = self._load(record.path)
         if waveform.ndim != 2:
             raise ValueError(f"Expected a [channels, samples] WAV: {record.path}")
-        if self.channel == "diff":
+        if self.channel in CHANNEL_MODES:
             if waveform.shape[0] < 2:
-                raise ValueError(f"The 'diff' channel needs a stereo WAV: {record.path}")
-            waveform = waveform[0] - waveform[1]
+                raise ValueError(f"The {self.channel!r} channel needs a stereo WAV: {record.path}")
+            if self.channel == "diff":
+                waveform = waveform[0] - waveform[1]
+            else:
+                waveform = ls_denoise(waveform[0], waveform[1], 1.0 if self.channel == "ls" else 0.5)
         else:
             if self.channel >= waveform.shape[0]:
                 raise ValueError(f"Expected channel {self.channel} in stereo WAV: {record.path}")

@@ -106,6 +106,16 @@ EXPERIMENTS = {
                                    {**BEATS_LATE, "stfpm_optimizer": "adamw", "stfpm_lr": 1e-4}, {"stfpm"}),
     "stfpm_beats_b12_adamw_1e5": ("STFPM on BEATs block 12, AdamW lr 1e-5",
                                   {"backbone": "BEATs", "layers": [12], "stfpm_optimizer": "adamw", "stfpm_lr": 1e-5}, {"stfpm"}),
+    # ---- far-microphone least-squares denoising (risky on the *Emu machines, see ls_denoise) ----
+    "beats_late_ls": ("beats_late on near - LS(far)", {**BEATS_LATE, "dcase2026": {"channel": "ls"}}, BEATS_METHODS),
+    "beats_late_ls_half": ("beats_late on near - 0.5 LS(far)", {**BEATS_LATE, "dcase2026": {"channel": "ls_half"}}, BEATS_METHODS),
+    "knn_ls": ("kNN BEATs on near - LS(far)", {"dcase2026": {"channel": "ls"}}, {"knn"}),
+    # ---- other detectors on the BEATs / signal side ----
+    "knn_b12": ("kNN on BEATs block 12", {"knn_layers": [12]}, {"knn"}),
+    "handcrafted": ("sub-band statistics + shrunk Mahalanobis", {}, {"handcrafted"}),
+    "handcrafted_64": ("64 sub-bands + shrunk Mahalanobis", {"handcrafted_bands": 64}, {"handcrafted"}),
+    "knn_ft": ("kNN on BEATs fine-tuned with LoRA + ArcFace", {}, {"knn_ft"}),
+    "knn_ft_b12": ("LoRA + ArcFace, kNN on block 12", {"knn_layers": [12]}, {"knn_ft"}),
     "dinomaly_l2": ("Dinomaly, L2 distance instead of cosine", {"dinomaly_distance": "l2"}, {"dinomaly"}),
     "agg_mean": ("score = mean of the anomaly map", {"dcase2026": {"score_aggregation": "mean"}}, None),
 }
@@ -126,6 +136,9 @@ PRESETS["stfpm_search"] = [
     "baseline", "stfpm_sgd_lr0p1", "stfpm_sgd_lr0p02", "stfpm_adamw_1e4", "layers_fine", "layers_deep",
     "stfpm_beats_late_adamw_1e5", "stfpm_beats_late_adamw_1e4", "stfpm_beats_b12_adamw_1e5",
 ]
+PRESETS["ls_search"] = ["beats_late_ls", "beats_late_ls_half", "knn_ls"]
+PRESETS["signal_search"] = ["handcrafted", "handcrafted_64", "knn_b12"]
+PRESETS["finetune_search"] = ["knn_ft", "knn_ft_b12"]
 PRESETS["band_full"] = ["beats_late", "beats_padim_full_cov"] + PRESETS["band_search"]
 #: aggregations compared from the same trained model by --aggregation-sweep
 AGGREGATION_SWEEP = ["max", "mean", "top5pct", "top10pct"]
@@ -285,6 +298,7 @@ def main() -> None:
     config_dir = ROOT / "paper_benchmark" / "grid_configs"
     config_dir.mkdir(exist_ok=True)
 
+    failed = []
     for name in args.experiments:
         methods = methods_for(name, args.methods)
         if args.skip_done:
@@ -305,8 +319,11 @@ def main() -> None:
         result = subprocess.run(command, cwd=ROOT)
         if result.returncode != 0:
             print(f"!! experiment {name} failed (exit code {result.returncode}); continuing", file=sys.stderr)
+            failed.append(name)
         write_summary(summary_path, args.experiments, columns, suffix)
         print(f"summary updated: {summary_path}", flush=True)
+    if failed:
+        sys.exit(1)  # lets a caller (run_all.py) see that something failed
 
 
 if __name__ == "__main__":

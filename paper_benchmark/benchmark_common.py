@@ -66,6 +66,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "knn_layers": [10],
     "knn_top_k": 1,
     "knn_metric": "cosine",
+    "finetune_rank": 8,
+    "finetune_epochs": 10,
+    "finetune_lr": 1e-4,
+    "finetune_margin": 0.3,
+    "handcrafted_bands": 32,
+    "handcrafted_shrinkage": 0.1,
     "dcase2026": {
         "score_aggregation": "temporal_topk_mean",
         "score_topk": 5,
@@ -357,7 +363,7 @@ def make_wave_to_spectrogram(config: dict[str, Any], device: torch.device, metho
 
 def method_sample_rate(method: str, config: dict[str, Any]) -> int:
     """Sample rate the waveforms must be loaded at for ``method`` (BEATs needs 16 kHz)."""
-    if method.lower() == "knn" or config.get("backbone") == "BEATs":
+    if method.lower() in ("knn", "knn_ft", "handcrafted") or config.get("backbone") == "BEATs":
         from moviad.utilities.audio.beats_feature_extractor import BEATsFeatureExtractor
 
         return BEATsFeatureExtractor.sample_rate
@@ -398,6 +404,32 @@ def make_model(
             score_standardization=config.get("patchcore_score_std", "none"),
             holdout_fraction=float(config.get("score_std_holdout", 0.1)),
         ).to(device)
+
+    if method == "knn_ft":
+        from moviad.models.audio.knn import BEATsEncoder
+        from moviad.models.audio.knn.finetune import FineTunedKNN
+
+        if not config.get("knn_beats_checkpoint"):
+            raise ValueError("Method 'knn_ft' needs knn_beats_checkpoint (and knn_beats_code_dir) in the config")
+        encoder = BEATsEncoder(
+            expand_path(config["knn_beats_checkpoint"]),
+            code_dir=config.get("knn_beats_code_dir"),
+            layers=config.get("knn_layers", [10]),
+            device=device,
+        )
+        return FineTunedKNN(
+            encoder, device,
+            top_k=int(config.get("knn_top_k", 1)), metric=config.get("knn_metric", "cosine"),
+            rank=int(config.get("finetune_rank", 8)), targets=tuple(config.get("finetune_targets", ["q_proj", "v_proj"])),
+            epochs=int(config.get("finetune_epochs", 10)), lr=float(config.get("finetune_lr", 1e-4)),
+            margin=float(config.get("finetune_margin", 0.3)), seed=int(config.get("seed", 0)),
+        )
+
+    if method == "handcrafted":
+        from moviad.models.audio.knn import SubbandMahalanobis, SubbandStatsEncoder
+
+        encoder = SubbandStatsEncoder(int(config.get("handcrafted_bands", 32)), device=device)
+        return SubbandMahalanobis(encoder, device, shrinkage=float(config.get("handcrafted_shrinkage", 0.1)))
 
     if method == "knn":
         from moviad.models.audio.knn import AudioKNN, BEATsEncoder
@@ -565,7 +597,12 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
         model.eval()
         return
 
-    if method == "knn":
+    if method == "knn_ft":
+        model.fit(train_loader)  # needs the dataset (attributes), not a plain batch iterator
+        model.eval()
+        return
+
+    if method in ("knn", "handcrafted"):
         model.fit(train_iter)
         model.eval()
         return

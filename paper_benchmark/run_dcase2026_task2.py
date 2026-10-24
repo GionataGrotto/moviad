@@ -315,7 +315,7 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     set_seed(seed)
     dcase = config.get("dcase2026", {})
     channel = dcase.get("channel", 0)
-    channel = channel if channel == "diff" else int(channel)
+    channel = channel if channel in ("diff", "ls", "ls_half") else int(channel)
     train_domain = dcase.get("train_domains", "all")
     test_domain = dcase.get("test_domain", "all")
     sample_rate = method_sample_rate(method, config)

@@ -340,6 +340,23 @@ backbone lo studente pre-addestrato con AdamW (`stfpm_beats_late_adamw_1e5`, `st
 uv run python paper_benchmark/run_dcase_grid.py --base-config paper_benchmark/config.knn.json --methods stfpm --preset stfpm_search --aggregation-sweep --skip-done
 ```
 
+**Tutto in un comando** (`run_all.py`). Esegue in sequenza ogni coppia (esperimento, metodo) di `PLAN`
+(riferimenti BEATs, 3 seed in piu' del CFA, `handcrafted`, canale `ls`/`ls_half`, STFPM, `knn_ft`), ciascuna in un
+processo separato: se una salta viene ritentata (`--retries`, default 1) e poi si passa alla successiva. I fallimenti
+sono in `results/paper_benchmark/all_failures.json`. Le coppie gia' complete sono saltate, quindi lo stesso comando
+riprende un job interrotto; `--only-failed` rilancia solo i falliti, `--only <testo>` filtra, `--list` mostra il piano.
+A fine corsa calcola le fusioni (`fuse_scores.py`, rank medio per macchina) in `results/paper_benchmark/fusion_dcase2026.md`.
+
+```bash
+uv run python paper_benchmark/run_all.py --base-config paper_benchmark/config.knn.json
+```
+
+Nuovi metodi/canali: `handcrafted` (statistiche per sotto-banda + Mahalanobis con shrinkage, nessun modello),
+`knn_ft` (BEATs con LoRA sulle proiezioni q/v e ArcFace sugli attributi nei nomi dei file; per le macchine senza
+attributi, `noAttribute`, l'encoder resta invariato; chiavi `finetune_*`), `dcase2026.channel` = `ls` / `ls_half`
+(near meno la predizione lineare ai minimi quadrati dal far mic; rischio sulle macchine Emu, dove il far e' il near filtrato).
+`fuse_scores.py --inputs nome=cartella ...` fonde cartelle di punteggi gia' esistenti.
+
 `diagnose_signal_features.py --dataset-path <DCASE>` calcola per macchina l'AUC di semplici statistiche
 del segnale (RMS, centroide spettrale, piattezza, quota di alte frequenze): serve a capire se un'inversione
 sistematica (AUC sotto 0,5) dipende dall'energia del clip.
