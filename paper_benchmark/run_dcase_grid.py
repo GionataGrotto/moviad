@@ -211,16 +211,28 @@ def best_per_method(table: dict, experiments: list[str], methods: list[str]) -> 
     return best
 
 
-def write_summary(path: Path, experiments: list[str], methods: list[str], suffix: str = "") -> None:
-    table = collect(experiments, methods, suffix=suffix)
+def write_summary(path: Path, experiments: list[str], methods: list[str], suffix: str = "", root: Path = ROOT) -> None:
+    table = collect(experiments, methods, suffix=suffix, root=root)
     lines = ["# Griglia DCASE 2026: AUC source media (7 macchine)", "",
              "| Esperimento | " + " | ".join(methods) + " |", "|---|" + "---|" * len(methods)]
     for name in experiments:
+        only = EXPERIMENTS[name][2]
         cells = []
         for method in methods:
+            if only is not None and method.split("@")[0] not in only:
+                cells.append("-")  # the experiment does not apply to this method
+                continue
             value = table[(name, method)]
             cells.append("n/d" if value is None else f"{value[0]:.3f}" + ("" if value[1] == 7 else f" ({value[1]} macchine)"))
         lines.append(f"| {name}: {EXPERIMENTS[name][0]} | " + " | ".join(cells) + " |")
+    lines += ["", "`-` = l'esperimento non si applica al metodo; `n/d` = applicabile ma senza risultati."]
+    best = best_per_method(table, experiments, methods)
+    if best:
+        lines += ["", "Migliore per metodo (solo run completi su 7 macchine):", ""]
+        lines += [f"- {method}: {name} ({value:.3f})" for method, (name, value) in best.items()]
+    detail = machine_detail(experiments, methods, suffix, root=root)
+    if detail:
+        lines += ["", "## Dettaglio per macchina (AUC source)"] + detail
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

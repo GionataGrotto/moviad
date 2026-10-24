@@ -75,3 +75,20 @@ def test_skip_done_only_keeps_the_methods_without_all_seven_machines(tmp_path):
     pending = grid.pending_methods("baseline", ["padim", "cfa", "patchcore"], root=tmp_path)
 
     assert pending == ["cfa", "patchcore"]  # complete padim is skipped, partial cfa and missing patchcore run
+
+
+def test_summary_file_contains_the_best_per_method_and_the_machine_detail(tmp_path):
+    base = tmp_path / "dcase2026_task2_evaluator" / "dev"
+    good = [("normal", 0.1), ("normal", 0.2), ("anomaly", 0.8), ("anomaly", 0.9)]  # AUC 1.0
+    bad = [("normal", 0.8), ("normal", 0.9), ("anomaly", 0.1), ("anomaly", 0.2)]  # AUC 0.0
+    for experiment, scores in (("baseline", bad), ("layers_deep", good)):
+        for machine in grid.MACHINES:
+            write_scores(base / f"grid_{experiment}" / "teams" / "moviad" / "padim", machine, scores)
+    summary = tmp_path / "summary.md"
+
+    grid.write_summary(summary, ["baseline", "layers_deep"], ["padim"], root=tmp_path)
+
+    text = summary.read_text()
+    assert "Migliore per metodo" in text and "- padim: layers_deep (1.000)" in text
+    assert "## Dettaglio per macchina" in text and "### layers_deep:" in text and "### baseline:" in text
+    assert "| padim | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |" in text
