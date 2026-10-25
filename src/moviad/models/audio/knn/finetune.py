@@ -92,7 +92,8 @@ class FineTunedKNN(AudioKNN):
             dim = self._embed_grad(waveforms[:1]).shape[-1]
         head = ArcFaceHead(dim, len(classes), h["margin"], h["scale"]).to(self.device)
         optimizer = torch.optim.AdamW([*self.lora_params, *head.parameters()], lr=h["lr"])
-        self.encoder.model.train()
+        # stay in eval mode: BEATs' layerdrop would skip random blocks (and their hooks) in train mode
+        self.encoder.model.eval()
         loss_value = None
         for _ in range(h["epochs"]):
             order = torch.randperm(len(waveforms))
