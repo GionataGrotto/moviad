@@ -44,3 +44,9 @@ def test_rerun_drops_skip_done():
     pair = ("baseline", "knn", "", None)
     assert "--skip-done" in run_all.command_for(pair, args())
     assert "--skip-done" not in run_all.command_for(pair, args(rerun=True))
+
+
+def test_pairs_write_their_summary_to_a_scratch_file():
+    command = run_all.command_for(("baseline", "knn", "", None), args())
+    assert command[command.index("--summary") + 1] == str(run_all.SCRATCH_SUMMARY)
+    assert run_all.SCRATCH_SUMMARY != run_all.SUMMARY

@@ -26,6 +26,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
+from run_dcase_grid import write_summary  # noqa: E402
 from fuse_scores import fuse, machine_auc, mean_auc, read_machine_scores  # noqa: E402
 
 #: (experiment, method, run suffix, seed); ordered from the most useful to the most speculative
@@ -50,6 +51,14 @@ PLAN: list[tuple[str, str, str, int | None]] = [
     ("beats_late_ls_half", "patchcore", "", None),
     ("beats_late_ls", "cfa", "", None),
     ("knn_ls", "knn", "", None),
+    # follow-ups of the LS result (round 2)
+    ("handcrafted_128", "handcrafted", "", None),
+    ("handcrafted_ls", "handcrafted", "", None),
+    ("handcrafted_64_ls", "handcrafted", "", None),
+    ("knn_b12_ls", "knn", "", None),
+    ("band_pc_banks_std_ls", "patchcore", "", None),
+    ("beats_b12_ls", "patchcore", "", None),
+    ("beats_padim_full_cov_ls", "padim", "", None),
     # STFPM: optimiser and BEATs student
     ("baseline", "stfpm", "", None),
     ("stfpm_sgd_lr0p1", "stfpm", "", None),
@@ -73,9 +82,15 @@ FUSIONS: dict[str, list[Run]] = {
     "knn+handcrafted": [("baseline", "knn", ""), ("handcrafted", "handcrafted", "")],
     "cfa+patchcore+knn+handcrafted": [("beats_b12", "cfa", ""), ("band_pc_banks_std", "patchcore", ""),
                                       ("baseline", "knn", ""), ("handcrafted", "handcrafted", "")],
+    "ls: patchcore+knn": [("beats_late_ls", "patchcore", ""), ("knn_ls", "knn", "")],
+    "ls: patchcore+knn+handcrafted_64": [("beats_late_ls", "patchcore", ""), ("knn_ls", "knn", ""), ("handcrafted_64", "handcrafted", "")],
+    "ls: patchcore+knn+handcrafted_64_ls": [("beats_late_ls", "patchcore", ""), ("knn_ls", "knn", ""), ("handcrafted_64_ls", "handcrafted", "")],
+    "ls: patchcore+knn+cfa": [("beats_late_ls", "patchcore", ""), ("knn_ls", "knn", ""), ("beats_late_ls", "cfa", "")],
     "knn+knn_ft": [("baseline", "knn", ""), ("knn_ft", "knn_ft", "")],
 }
 
+SUMMARY = ROOT / "results" / "paper_benchmark" / "grid_summary.md"
+SCRATCH_SUMMARY = ROOT / "results" / "paper_benchmark" / "grid_summary_last_pair.md"
 FAILURES = ROOT / "results" / "paper_benchmark" / "all_failures.json"
 FUSION_REPORT = ROOT / "results" / "paper_benchmark" / "fusion_dcase2026.md"
 
@@ -94,7 +109,7 @@ def command_for(pair, args) -> list[str]:
     experiment, method, suffix, seed = pair
     command = [sys.executable, str(HERE / "run_dcase_grid.py"), "--base-config", str(args.base_config),
                "--experiments", experiment, "--methods", method, "--aggregation-sweep",
-               "--epochs", str(args.epochs)]
+               "--epochs", str(args.epochs), "--summary", str(SCRATCH_SUMMARY)]
     if not getattr(args, "rerun", False):
         command.append("--skip-done")
     if suffix:
@@ -113,6 +128,13 @@ def run_pair(pair, args, runner=subprocess.run) -> bool:
         print(f"!! {pair_label(pair)} failed", file=sys.stderr, flush=True)
         time.sleep(args.retry_wait)
     return False
+
+
+def write_global_summary(path: Path = SUMMARY) -> None:
+    """One table with every experiment and method of the plan, read from the saved scores."""
+    experiments = list(dict.fromkeys(e for e, _, _, _ in PLAN))
+    methods = list(dict.fromkeys(m for _, m, _, _ in PLAN))
+    write_summary(path, experiments, methods)
 
 
 def complete(run: Run, root: Path = ROOT) -> bool:
@@ -151,10 +173,17 @@ def main() -> None:
     parser.add_argument("--only-failed", action="store_true", help="run only the pairs listed in the last failure report")
     parser.add_argument("--only", nargs="+", default=None, help="run only pairs whose label contains one of these strings")
     parser.add_argument("--rerun", action="store_true", help="redo every pair, even those already complete")
+    parser.add_argument("--summary-only", action="store_true", help="rebuild grid_summary.md and the fusions from the saved scores, run nothing")
     parser.add_argument("--skip-fusion", action="store_true")
     parser.add_argument("--list", action="store_true", help="print the plan and exit")
     args = parser.parse_args()
 
+    if args.summary_only:
+        write_global_summary()
+        print(f"summary written: {SUMMARY}")
+        if not args.skip_fusion:
+            print("\n".join(write_fusions()))
+        return
     plan = PLAN
     if args.only_failed:
         previous = set(json.loads(FAILURES.read_text(encoding="utf-8"))) if FAILURES.exists() else set()
@@ -175,6 +204,7 @@ def main() -> None:
             ok = False
         if not ok:
             failed.append(pair_label(pair))
+        write_global_summary()
         FAILURES.parent.mkdir(parents=True, exist_ok=True)
         FAILURES.write_text(json.dumps(failed, indent=2), encoding="utf-8")
     if not args.skip_fusion:
