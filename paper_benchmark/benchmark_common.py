@@ -68,6 +68,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "knn_metric": "cosine",
     "finetune_rank": 8,
     "finetune_epochs": 10,
+    "finetune_batch_size": 8,
     "finetune_lr": 1e-4,
     "finetune_margin": 0.3,
     "handcrafted_bands": 32,
@@ -421,7 +422,7 @@ def make_model(
             encoder, device,
             top_k=int(config.get("knn_top_k", 1)), metric=config.get("knn_metric", "cosine"),
             rank=int(config.get("finetune_rank", 8)), targets=tuple(config.get("finetune_targets", ["q_proj", "v_proj"])),
-            epochs=int(config.get("finetune_epochs", 10)), lr=float(config.get("finetune_lr", 1e-4)),
+            epochs=int(config.get("finetune_epochs", 10)), batch_size=int(config.get("finetune_batch_size", 8)), lr=float(config.get("finetune_lr", 1e-4)),
             margin=float(config.get("finetune_margin", 0.3)), seed=int(config.get("seed", 0)),
         )
 
