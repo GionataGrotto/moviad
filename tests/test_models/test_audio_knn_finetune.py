@@ -87,3 +87,13 @@ def test_finetune_updates_adapters_and_single_attribute_is_skipped():
     before = [p.clone() for p in flat.lora_params]
     flat.fit(DataLoader(ToyDataset(["noAttribute"] * 6), batch_size=3))
     assert all(torch.equal(a, b) for a, b in zip(before, flat.lora_params))
+
+
+def test_lora_exposes_the_adapted_weight_for_code_that_reads_it_directly():
+    layer = LoRALinear(nn.Linear(8, 8), rank=2)
+    nn.init.normal_(layer.lora_b.weight)
+    x = torch.randn(3, 8)
+    direct = torch.nn.functional.linear(x, layer.weight, layer.bias)
+    assert torch.allclose(direct, layer(x), atol=1e-5)
+    direct.sum().backward()
+    assert layer.lora_a.weight.grad is not None

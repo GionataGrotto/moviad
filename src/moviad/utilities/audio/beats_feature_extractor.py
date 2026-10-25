@@ -79,6 +79,8 @@ class BEATsFeatureExtractor(nn.Module):
             self.model.load_state_dict(checkpoint["model"])
 
         blocks = self.model.encoder.layers
+        # layerdrop would skip random blocks (and their hooks) when a student is trained: keep all of them
+        self.model.encoder.layerdrop = 0.0
         self.layers = tuple(int(layer) for layer in layers)
         if not self.layers or any(not 1 <= layer <= len(blocks) for layer in self.layers):
             raise ValueError(f"layers must be block numbers in [1, {len(blocks)}], got {self.layers}")

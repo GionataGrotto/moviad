@@ -38,3 +38,9 @@ def test_failed_pair_is_retried_then_reported():
     calls.clear()
     assert run_all.run_pair(pair, args(retries=2), lambda c, cwd=None: calls.append(c) or types.SimpleNamespace(returncode=1)) is False
     assert len(calls) == 3
+
+
+def test_rerun_drops_skip_done():
+    pair = ("baseline", "knn", "", None)
+    assert "--skip-done" in run_all.command_for(pair, args())
+    assert "--skip-done" not in run_all.command_for(pair, args(rerun=True))

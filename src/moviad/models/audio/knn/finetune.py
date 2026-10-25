@@ -30,6 +30,24 @@ class LoRALinear(nn.Module):
         nn.init.zeros_(self.lora_b.weight)
         self.scale = alpha / rank
 
+    # Some attention implementations (fairseq-style fast paths) read ``q_proj.weight`` / ``.bias`` directly instead of
+    # calling the layer: expose the adapted weight, with gradient, so they see the low-rank update as well.
+    @property
+    def weight(self):
+        return self.base.weight + self.scale * (self.lora_b.weight @ self.lora_a.weight)
+
+    @property
+    def bias(self):
+        return self.base.bias
+
+    @property
+    def in_features(self):
+        return self.base.in_features
+
+    @property
+    def out_features(self):
+        return self.base.out_features
+
     def forward(self, x):
         return self.base(x) + self.scale * self.lora_b(self.lora_a(x))
 

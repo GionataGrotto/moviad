@@ -93,8 +93,10 @@ def pair_label(pair) -> str:
 def command_for(pair, args) -> list[str]:
     experiment, method, suffix, seed = pair
     command = [sys.executable, str(HERE / "run_dcase_grid.py"), "--base-config", str(args.base_config),
-               "--experiments", experiment, "--methods", method, "--skip-done", "--aggregation-sweep",
+               "--experiments", experiment, "--methods", method, "--aggregation-sweep",
                "--epochs", str(args.epochs)]
+    if not getattr(args, "rerun", False):
+        command.append("--skip-done")
     if suffix:
         command += ["--run-suffix", suffix]
     if seed is not None:
@@ -148,6 +150,7 @@ def main() -> None:
     parser.add_argument("--retry-wait", type=float, default=30.0, help="seconds before a retry (lets the GPU memory free up)")
     parser.add_argument("--only-failed", action="store_true", help="run only the pairs listed in the last failure report")
     parser.add_argument("--only", nargs="+", default=None, help="run only pairs whose label contains one of these strings")
+    parser.add_argument("--rerun", action="store_true", help="redo every pair, even those already complete")
     parser.add_argument("--skip-fusion", action="store_true")
     parser.add_argument("--list", action="store_true", help="print the plan and exit")
     args = parser.parse_args()
