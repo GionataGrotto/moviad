@@ -55,22 +55,55 @@ def discover_machine_types(root: str | Path) -> list[str]:
     return sorted(path.name for path in root.iterdir() if path.is_dir())
 
 
-CHANNEL_MODES = ("diff", "ls", "ls_half")
+#: "diff" near - far; "ls" / "ls_half" subtract the far microphone after a per-clip least-squares filter; "ls_win" estimates
+#: the filter on blocks of ~2 s; "ls_global" uses one filter per machine, estimated on its training clips
+CHANNEL_MODES = ("diff", "ls", "ls_half", "ls_win", "ls_global")
+LS_WINDOW_FRAMES = 125  # ~2 s at hop 256
+_GLOBAL_TRANSFER: dict = {}
 
 
-def ls_denoise(near: torch.Tensor, far: torch.Tensor, strength: float = 1.0, n_fft: int = 1024, eps: float = 1e-8) -> torch.Tensor:
+def _stft(signal: torch.Tensor, n_fft: int) -> torch.Tensor:
+    return torch.stft(signal, n_fft, hop_length=n_fft // 4, window=torch.hann_window(n_fft, device=signal.device), return_complex=True)
+
+
+def cross_spectra(near: torch.Tensor, far: torch.Tensor, n_fft: int = 1024) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(sum near * conj(far), sum |far|^2)`` over the frames of a clip, per frequency bin ``[F, 1]``."""
+    spec_near, spec_far = _stft(near, n_fft), _stft(far, n_fft)
+    return (spec_near * spec_far.conj()).sum(dim=-1, keepdim=True), spec_far.abs().pow(2).sum(dim=-1, keepdim=True)
+
+
+def ls_denoise(
+    near: torch.Tensor,
+    far: torch.Tensor,
+    strength: float = 1.0,
+    n_fft: int = 1024,
+    eps: float = 1e-8,
+    segment_frames: int | None = None,
+    transfer: torch.Tensor | None = None,
+) -> torch.Tensor:
     """Remove from the near microphone what a per-frequency linear filter predicts from the far one.
 
     The filter H(f) = sum(near * conj(far)) / sum(|far|^2) is the least-squares transfer function
     of the whole clip, so the residual keeps the part of the near signal that the far microphone
-    cannot explain. ``strength`` < 1 subtracts only a fraction of the prediction. Risk: where the far
-    channel is the near sound filtered (the *Emu machines) the filter also removes the machine sound.
+    cannot explain. ``strength`` < 1 subtracts only a fraction of the prediction. With
+    ``segment_frames`` the filter is estimated separately on consecutive blocks of frames (it can follow
+    a noise that changes during the clip); with ``transfer`` a given filter ``[F, 1]`` is used instead.
+    Risk: where the far channel is the near sound filtered (the *Emu machines) the filter also removes
+    the machine sound.
     """
     window = torch.hann_window(n_fft, device=near.device)
-    spec_near = torch.stft(near, n_fft, hop_length=n_fft // 4, window=window, return_complex=True)
-    spec_far = torch.stft(far, n_fft, hop_length=n_fft // 4, window=window, return_complex=True)
-    transfer = (spec_near * spec_far.conj()).sum(dim=-1, keepdim=True) / (spec_far.abs().pow(2).sum(dim=-1, keepdim=True) + eps)
-    residual = spec_near - strength * transfer * spec_far
+    spec_near, spec_far = _stft(near, n_fft), _stft(far, n_fft)
+    if transfer is not None:
+        filt = transfer.to(near.device)
+    elif segment_frames:
+        blocks = []
+        for start in range(0, spec_far.shape[-1], segment_frames):
+            sn, sf = spec_near[..., start : start + segment_frames], spec_far[..., start : start + segment_frames]
+            blocks.append((sn * sf.conj()).sum(-1, keepdim=True) / (sf.abs().pow(2).sum(-1, keepdim=True) + eps))
+        filt = torch.cat([b.expand(-1, min(segment_frames, spec_far.shape[-1] - i * segment_frames)) for i, b in enumerate(blocks)], dim=-1)
+    else:
+        filt = (spec_near * spec_far.conj()).sum(dim=-1, keepdim=True) / (spec_far.abs().pow(2).sum(dim=-1, keepdim=True) + eps)
+    residual = spec_near - strength * filt * spec_far
     return torch.istft(residual, n_fft, hop_length=n_fft // 4, window=window, length=near.shape[-1])
 
 
@@ -109,10 +142,10 @@ class DCASE2026Task2Dataset(Dataset):
         self.train_domains = train_domains.lower()
         # "diff" feeds the near-minus-far waveform (channel 0 - channel 1), which cancels
         # the noise that both microphones pick up.
-        # "ls" / "ls_half" subtract the far microphone after a per-clip least-squares filter (see ls_denoise).
+        # the ls* modes subtract the far microphone after a least-squares filter (see ls_denoise).
         self.channel = channel if channel in CHANNEL_MODES else int(channel)
         if self.channel not in CHANNEL_MODES and self.channel < 0:
-            raise ValueError("channel must be a non-negative index, 'diff', 'ls' or 'ls_half'")
+            raise ValueError(f"channel must be a non-negative index or one of {CHANNEL_MODES}")
         self.target_sample_rate = int(target_sample_rate)
         self._resampler = torchaudio.transforms.Resample(16000, self.target_sample_rate)
         if self.split not in {"train", "test"}:
@@ -149,6 +182,24 @@ class DCASE2026Task2Dataset(Dataset):
     def __len__(self) -> int:
         return len(self.records)
 
+    def _global_transfer(self, eps: float = 1e-8) -> torch.Tensor:
+        """One LS filter per machine from all its training clips (the same for the train and the test dataset)."""
+        key = (str(self.root), self.machine_type)
+        if key not in _GLOBAL_TRANSFER:
+            numerator = denominator = 0
+            for path in sorted((self.root / self.machine_type).rglob("*.wav")):
+                try:
+                    record = parse_dcase_filename(path, self.machine_type)
+                except ValueError:
+                    continue
+                if record.split != "train":
+                    continue
+                clip = self._load(path)
+                cross, power = cross_spectra(clip[0], clip[1])
+                numerator, denominator = numerator + cross, denominator + power
+            _GLOBAL_TRANSFER[key] = numerator / (denominator + eps)
+        return _GLOBAL_TRANSFER[key]
+
     @staticmethod
     def _load(path: Path) -> torch.Tensor:
         waveform, sample_rate = torchaudio.load(str(path))
@@ -164,10 +215,15 @@ class DCASE2026Task2Dataset(Dataset):
         if self.channel in CHANNEL_MODES:
             if waveform.shape[0] < 2:
                 raise ValueError(f"The {self.channel!r} channel needs a stereo WAV: {record.path}")
+            near, far = waveform[0], waveform[1]
             if self.channel == "diff":
-                waveform = waveform[0] - waveform[1]
+                waveform = near - far
+            elif self.channel == "ls_win":
+                waveform = ls_denoise(near, far, segment_frames=LS_WINDOW_FRAMES)
+            elif self.channel == "ls_global":
+                waveform = ls_denoise(near, far, transfer=self._global_transfer())
             else:
-                waveform = ls_denoise(waveform[0], waveform[1], 1.0 if self.channel == "ls" else 0.5)
+                waveform = ls_denoise(near, far, 1.0 if self.channel == "ls" else 0.5)
         else:
             if self.channel >= waveform.shape[0]:
                 raise ValueError(f"Expected channel {self.channel} in stereo WAV: {record.path}")

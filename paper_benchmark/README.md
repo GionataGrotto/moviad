@@ -357,6 +357,18 @@ attributi, `noAttribute`, l'encoder resta invariato; chiavi `finetune_*`), `dcas
 (near meno la predizione lineare ai minimi quadrati dal far mic; rischio sulle macchine Emu, dove il far e' il near filtrato).
 `fuse_scores.py --inputs nome=cartella ...` fonde cartelle di punteggi gia' esistenti.
 
+Aggregazioni del punteggio di clip: `max`, `mean`, `temporal_topk_mean` (per frame la media delle 5 bande piu' alte,
+poi media su tutti i frame), `top<N>pct` (N% delle patch piu' alte dell'intera mappa) e `frames<N>pct` (come
+`temporal_topk_mean` ma media solo dell'N% di frame piu' alti). Nelle fusioni di `run_all.py` un elemento puo' essere una
+lista di run (es. i seed), mediati prima e contati come un solo componente.
+
+Canali LS (`dcase2026.channel`): `ls` (un filtro per clip), `ls_half`, `ls_win` (filtro su blocchi di ~2 s, segue un rumore
+che cambia), `ls_global` (un filtro per macchina stimato sui clip di training). `handcrafted`: `handcrafted_stats`
+(`mean`, `std`, `diffstd`, `kurtosis`, `q10`, `q90`, `corr`), `handcrafted_scorer` (`mahalanobis`, `knn`, `iforest`).
+`knn_ft`: `finetune_pseudo_classes` = k cluster k-means come classi quando i nomi dei file non hanno attributi
+(fan, ToyCar). `error_analysis.py --scores <cartella> --machine <m> --attributes <ground_truth_attributes>` mostra
+AUC per attributo, anomalie mancate e falsi allarmi.
+
 `diagnose_signal_features.py --dataset-path <DCASE>` calcola per macchina l'AUC di semplici statistiche
 del segnale (RMS, centroide spettrale, piattezza, quota di alte frequenze): serve a capire se un'inversione
 sistematica (AUC sotto 0,5) dipende dall'energia del clip.

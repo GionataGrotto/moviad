@@ -62,6 +62,9 @@ from moviad.datasets.dcase2026_task2 import (
 
 
 _TOP_PERCENT = re.compile(r"^top(\d+(?:\.\d+)?)pct$")
+# "frames<N>pct": per frame the mean of the top-k frequency responses (as temporal_topk_mean), then the mean of the
+# highest N% of the frames instead of all of them
+_FRAMES_PERCENT = re.compile(r"^frames(\d+(?:\.\d+)?)pct$")
 _BASIC_AGGREGATIONS = ("max", "mean", "temporal_topk_mean")
 
 
@@ -69,11 +72,11 @@ def validate_aggregation(name: str) -> str:
     """``max``, ``mean``, ``temporal_topk_mean`` or ``top<N>pct`` with 0 < N <= 100."""
     if name in _BASIC_AGGREGATIONS:
         return name
-    match = _TOP_PERCENT.match(name)
+    match = _TOP_PERCENT.match(name) or _FRAMES_PERCENT.match(name)
     if match and 0 < float(match.group(1)) <= 100:
         return name
     raise argparse.ArgumentTypeError(
-        f"Unsupported DCASE score aggregation {name!r}: use max, mean, temporal_topk_mean or top<N>pct (0 < N <= 100)"
+        f"Unsupported DCASE score aggregation {name!r}: use max, mean, temporal_topk_mean top<N>pct or frames<N>pct (0 < N <= 100)"
     )
 
 
@@ -169,14 +172,19 @@ def _aggregate_dcase_score(output, aggregation: str, top_k: int = 5) -> np.ndarr
         values = anomaly_map.reshape(anomaly_map.shape[0], -1)
         count = max(1, math.ceil(float(match.group(1)) / 100 * values.shape[1]))
         return np.partition(values, values.shape[1] - count, axis=1)[:, -count:].mean(axis=1)
-    if aggregation == "temporal_topk_mean":
+    frames = _FRAMES_PERCENT.match(aggregation)
+    if aggregation == "temporal_topk_mean" or frames:
         if top_k <= 0:
             raise ValueError(f"score_topk must be positive, got {top_k}")
         top_k = min(top_k, anomaly_map.shape[2])
         top_frequency = np.partition(
             anomaly_map, anomaly_map.shape[2] - top_k, axis=2
         )[:, :, -top_k:]
-        return top_frequency.mean(axis=(1, 2))
+        if not frames:
+            return top_frequency.mean(axis=(1, 2))
+        per_frame = top_frequency.mean(axis=2)  # (batch, time)
+        count = max(1, math.ceil(float(frames.group(1)) / 100 * per_frame.shape[1]))
+        return np.partition(per_frame, per_frame.shape[1] - count, axis=1)[:, -count:].mean(axis=1)
     raise ValueError(f"Unsupported DCASE score aggregation: {aggregation}")
 
 
@@ -315,7 +323,7 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     set_seed(seed)
     dcase = config.get("dcase2026", {})
     channel = dcase.get("channel", 0)
-    channel = channel if channel in ("diff", "ls", "ls_half") else int(channel)
+    channel = channel if channel in ("diff", "ls", "ls_half", "ls_win", "ls_global") else int(channel)
     train_domain = dcase.get("train_domains", "all")
     test_domain = dcase.get("test_domain", "all")
     sample_rate = method_sample_rate(method, config)

@@ -85,9 +85,10 @@ class FineTunedKNN(AudioKNN):
     """AudioKNN whose BEATs encoder is first adapted with LoRA + ArcFace on the attribute labels."""
 
     def __init__(self, encoder, device, top_k=1, metric="cosine", rank=8, alpha=16.0, targets=("q_proj", "v_proj"),
-                 epochs=10, lr=1e-4, batch_size=8, margin=0.3, scale=16.0, seed=0):
+                 epochs=10, lr=1e-4, batch_size=8, margin=0.3, scale=16.0, seed=0, pseudo_classes=0):
         super().__init__(encoder, device, top_k=top_k, metric=metric)
         self.lora_params = apply_lora(encoder.model, targets, rank, alpha)
+        self.pseudo_classes = pseudo_classes
         self.hyper = dict(epochs=epochs, lr=lr, batch_size=batch_size, margin=margin, scale=scale, seed=seed)
 
     def _embed_grad(self, waveforms: torch.Tensor) -> torch.Tensor:
@@ -131,5 +132,18 @@ class FineTunedKNN(AudioKNN):
         if records is None:
             raise ValueError("FineTunedKNN needs a dataset with .records carrying the attribute of every clip")
         waveforms = torch.stack([dataset[i] for i in range(len(dataset))])
-        self.finetune(waveforms, [record.attribute for record in records])
+        labels = [record.attribute for record in records]
+        if len(set(labels)) < 2 and self.pseudo_classes > 1:
+            labels = self._pseudo_labels(waveforms)
+        self.finetune(waveforms, labels)
         super().fit(train_dataloader)
+
+    def _pseudo_labels(self, waveforms: torch.Tensor) -> list[str]:
+        """No attributes in the file names: k-means on the frozen embeddings gives ``pseudo_classes`` pseudo-classes."""
+        from sklearn.cluster import KMeans
+
+        batches = [self.embed(waveforms[start : start + self.hyper["batch_size"]])[-1].cpu() for start in range(0, len(waveforms), self.hyper["batch_size"])]
+        embeddings = torch.cat(batches).numpy()
+        clusters = KMeans(n_clusters=min(self.pseudo_classes, len(embeddings)), n_init=10, random_state=self.hyper["seed"]).fit_predict(embeddings)
+        print(f"finetune: no attributes, {len(set(clusters))} k-means pseudo-classes", flush=True)
+        return [f"cluster_{c}" for c in clusters]

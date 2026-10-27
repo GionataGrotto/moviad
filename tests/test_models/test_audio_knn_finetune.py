@@ -97,3 +97,10 @@ def test_lora_exposes_the_adapted_weight_for_code_that_reads_it_directly():
     assert torch.allclose(direct, layer(x), atol=1e-5)
     direct.sum().backward()
     assert layer.lora_a.weight.grad is not None
+
+
+def test_pseudo_classes_make_machines_without_attributes_trainable():
+    model = FineTunedKNN(ToyEncoder(), torch.device("cpu"), epochs=3, batch_size=4, pseudo_classes=2)
+    before = [p.clone() for p in model.lora_params]
+    model.fit(DataLoader(ToyDataset(["noAttribute"] * 6 + ["noAttribute"] * 6), batch_size=4))
+    assert any(not torch.equal(a, b) for a, b in zip(before, model.lora_params))

@@ -10,12 +10,12 @@ from paper_benchmark import benchmark_common as common
 from paper_benchmark import run_dcase2026_task2 as runner
 
 
-@pytest.mark.parametrize("name", ["max", "mean", "temporal_topk_mean", "top5pct", "top10pct", "top12.5pct", "top100pct"])
+@pytest.mark.parametrize("name", ["max", "mean", "temporal_topk_mean", "top5pct", "top10pct", "top12.5pct", "top100pct", "frames10pct", "frames100pct"])
 def test_valid_aggregation_names(name):
     assert runner.validate_aggregation(name) == name
 
 
-@pytest.mark.parametrize("name", ["median", "top0pct", "top101pct", "top5", "topXpct", "pct5"])
+@pytest.mark.parametrize("name", ["median", "frames0pct", "frames101pct", "frames", "top0pct", "top101pct", "top5", "topXpct", "pct5"])
 def test_invalid_aggregation_names_are_rejected(name):
     with pytest.raises(argparse.ArgumentTypeError, match="Unsupported"):
         runner.validate_aggregation(name)
@@ -100,3 +100,17 @@ def test_run_one_writes_the_extra_aggregations_next_to_the_main_one(tmp_path):
     assert row["score_aggregation"] == "temporal_topk_mean"
     assert set(row["extra_aggregations"]) == {"max", "top5pct"}
     assert all("auc_source" in metrics for metrics in row["extra_aggregations"].values())
+
+
+def test_frames_percent_averages_the_highest_frames_of_the_topk_frequency_score():
+    # 4 frames; per frame the top-2 of the 3 frequencies are averaged: 1.5, 2.5, 3.5, 10.5
+    anomaly_map = torch.tensor([[[0.0, 1.0, 2.0], [1.0, 2.0, 3.0], [2.0, 3.0, 4.0], [9.0, 10.0, 11.0]]]).unsqueeze(1)
+    output = (anomaly_map, torch.zeros(1), torch.zeros(1, 4))
+
+    def score(name):
+        return float(runner._aggregate_dcase_score(output, name, top_k=2)[0])
+
+    assert score("temporal_topk_mean") == pytest.approx(4.5)
+    assert score("frames100pct") == pytest.approx(score("temporal_topk_mean"))
+    assert score("frames25pct") == pytest.approx(10.5)  # one frame of four
+    assert score("frames50pct") == pytest.approx(7.0)  # the two highest frames

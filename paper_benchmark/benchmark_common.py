@@ -71,8 +71,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "finetune_batch_size": 8,
     "finetune_lr": 1e-4,
     "finetune_margin": 0.3,
+    "finetune_pseudo_classes": 0,
     "handcrafted_bands": 32,
     "handcrafted_shrinkage": 0.1,
+    "handcrafted_stats": ["mean", "std", "diffstd"],
+    "handcrafted_scorer": "mahalanobis",
+    "handcrafted_top_k": 3,
     "dcase2026": {
         "score_aggregation": "temporal_topk_mean",
         "score_topk": 5,
@@ -424,13 +428,20 @@ def make_model(
             rank=int(config.get("finetune_rank", 8)), targets=tuple(config.get("finetune_targets", ["q_proj", "v_proj"])),
             epochs=int(config.get("finetune_epochs", 10)), batch_size=int(config.get("finetune_batch_size", 8)), lr=float(config.get("finetune_lr", 1e-4)),
             margin=float(config.get("finetune_margin", 0.3)), seed=int(config.get("seed", 0)),
+            pseudo_classes=int(config.get("finetune_pseudo_classes", 0)),
         )
 
     if method == "handcrafted":
         from moviad.models.audio.knn import SubbandMahalanobis, SubbandStatsEncoder
 
-        encoder = SubbandStatsEncoder(int(config.get("handcrafted_bands", 32)), device=device)
-        return SubbandMahalanobis(encoder, device, shrinkage=float(config.get("handcrafted_shrinkage", 0.1)))
+        encoder = SubbandStatsEncoder(
+            int(config.get("handcrafted_bands", 32)), device=device, stats=tuple(config.get("handcrafted_stats", ["mean", "std", "diffstd"]))
+        )
+        return SubbandMahalanobis(
+            encoder, device, shrinkage=float(config.get("handcrafted_shrinkage", 0.1)),
+            scorer=config.get("handcrafted_scorer", "mahalanobis"), top_k=int(config.get("handcrafted_top_k", 3)),
+            seed=int(config.get("seed", 0)),
+        )
 
     if method == "knn":
         from moviad.models.audio.knn import AudioKNN, BEATsEncoder

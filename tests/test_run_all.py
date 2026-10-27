@@ -16,8 +16,9 @@ def test_plan_and_fusions_reference_known_experiments_and_methods():
         only = EXPERIMENTS[experiment][2]
         assert only is None or method in only, (experiment, method)
     planned = {(e, m, s) for e, m, s, _ in run_all.PLAN}
-    for runs in run_all.FUSIONS.values():
-        assert set(runs) <= planned
+    for entries in run_all.FUSIONS.values():
+        flat = {r for entry in entries for r in (entry if isinstance(entry, list) else [entry])}
+        assert flat <= planned
 
 
 def test_command_has_suffix_and_seed():
@@ -50,3 +51,24 @@ def test_pairs_write_their_summary_to_a_scratch_file():
     command = run_all.command_for(("baseline", "knn", "", None), args())
     assert command[command.index("--summary") + 1] == str(run_all.SCRATCH_SUMMARY)
     assert run_all.SCRATCH_SUMMARY != run_all.SUMMARY
+
+
+def test_write_fusions_averages_a_group_of_seeds_as_one_component(tmp_path, monkeypatch):
+    machines = ["ToyCar", "ToyCarEmu", "bearingEmu", "fan", "gearboxEmu", "sliderEmu", "valveEmu"]
+    files = [f"section_00_source_test_{'anomaly' if i % 2 else 'normal'}_{i:04d}.wav" for i in range(10)]
+
+    def write(run, offset):
+        folder = run_all.run_folder(run, tmp_path)
+        folder.mkdir(parents=True)
+        for machine in machines:
+            rows = "".join(f"{f},{i % 2 + 0.1 * ((i * 7 + offset) % 5)}\n" for i, f in enumerate(files))
+            (folder / f"anomaly_score_{machine}_section_00_test.csv").write_text(rows)
+
+    seeds = [("e", "m", ""), ("e", "m", "_s1")]
+    for i, run in enumerate(seeds + [("h", "x", "")]):
+        write(run, i)
+    monkeypatch.setattr(run_all, "FUSIONS", {"grouped": [seeds, ("h", "x", "")], "missing": [("nope", "m", "")]})
+    lines = run_all.write_fusions(tmp_path, tmp_path / "report.md")
+    grouped = next(line for line in lines if line.startswith("| grouped"))
+    assert "| 2 |" in grouped and "n/d" not in grouped
+    assert "n/d (mancano: nope:m)" in next(line for line in lines if line.startswith("| missing"))

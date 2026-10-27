@@ -59,6 +59,41 @@ PLAN: list[tuple[str, str, str, int | None]] = [
     ("band_pc_banks_std_ls", "patchcore", "", None),
     ("beats_b12_ls", "patchcore", "", None),
     ("beats_padim_full_cov_ls", "padim", "", None),
+    # round 3: robustness of the LS winners (3 more seeds, which also carry the frames<N>pct aggregation),
+    # fine-tuning on the LS signal, handcrafted settings
+    ("beats_late_ls", "patchcore", "_frames", None),
+    ("band_pc_banks_std_ls", "patchcore", "_seed1", 1),
+    ("band_pc_banks_std_ls", "patchcore", "_seed2", 2),
+    ("band_pc_banks_std_ls", "patchcore", "_seed3", 3),
+    ("knn_ft_ls", "knn_ft", "", None),
+    ("knn_ft", "knn_ft", "_seed1", 1),
+    ("knn_ft", "knn_ft", "_seed2", 2),
+    ("knn_ft_b12_ls", "knn_ft", "", None),
+    ("handcrafted_96_ls", "handcrafted", "", None),
+    ("handcrafted_64_ls_shrink0p3", "handcrafted", "", None),
+    ("handcrafted_64_ls_shrink0p03", "handcrafted", "", None),
+    # round 4: finer LS, LS on the other methods, richer handcrafted, stronger fine-tuning, several BEATs blocks
+    ("band_pc_banks_std_ls_win", "patchcore", "", None),
+    ("band_pc_banks_std_ls_global", "patchcore", "", None),
+    ("handcrafted_64_ls_win", "handcrafted", "", None),
+    ("handcrafted_64_ls_global", "handcrafted", "", None),
+    ("knn_ls_win", "knn", "", None),
+    ("knn_ls_global", "knn", "", None),
+    ("beats_late_ls", "cfa", "_seed1", 1),
+    ("beats_late_ls", "cfa", "_seed2", 2),
+    ("beats_b12_ls", "cfa", "", None),
+    ("stfpm_ls", "stfpm", "", None),
+    ("dinomaly_ls", "dinomaly", "", None),
+    ("handcrafted_64_ls_kurt", "handcrafted", "", None),
+    ("handcrafted_64_ls_quant", "handcrafted", "", None),
+    ("handcrafted_64_ls_corr", "handcrafted", "", None),
+    ("handcrafted_64_ls_allstats", "handcrafted", "", None),
+    ("handcrafted_64_ls_knn", "handcrafted", "", None),
+    ("handcrafted_64_ls_iforest", "handcrafted", "", None),
+    ("knn_ft_ls_strong", "knn_ft", "", None),
+    ("knn_ft_ls_pseudo", "knn_ft", "", None),
+    ("knn_b10_12_ls", "knn", "", None),
+    ("knn_b8_10_12_ls", "knn", "", None),
     # STFPM: optimiser and BEATs student
     ("baseline", "stfpm", "", None),
     ("stfpm_sgd_lr0p1", "stfpm", "", None),
@@ -70,9 +105,12 @@ PLAN: list[tuple[str, str, str, int | None]] = [
     ("knn_ft_b12", "knn_ft", "", None),
 ]
 
+#: the time-percentage pooling, on top of the --aggregation-sweep ones
+EXTRA_AGGREGATIONS = ["frames10pct", "frames25pct", "frames50pct"]
 Run = tuple[str, str, str]  # experiment, method, suffix
 #: name -> runs whose scores are averaged (rank per machine, equal weights)
-FUSIONS: dict[str, list[Run]] = {
+#: an entry may itself be a list of runs (e.g. seeds): those are averaged first and count as one component
+FUSIONS: dict[str, list] = {
     "cfa_seeds": [("beats_b12", "cfa", s) for s in ("", "_seed1", "_seed2", "_seed3")],
     "cfa+patchcore": [("beats_b12", "cfa", ""), ("band_pc_banks_std", "patchcore", "")],
     "cfa+patchcore+knn": [("beats_b12", "cfa", ""), ("band_pc_banks_std", "patchcore", ""), ("baseline", "knn", "")],
@@ -86,6 +124,22 @@ FUSIONS: dict[str, list[Run]] = {
     "ls: patchcore+knn+handcrafted_64": [("beats_late_ls", "patchcore", ""), ("knn_ls", "knn", ""), ("handcrafted_64", "handcrafted", "")],
     "ls: patchcore+knn+handcrafted_64_ls": [("beats_late_ls", "patchcore", ""), ("knn_ls", "knn", ""), ("handcrafted_64_ls", "handcrafted", "")],
     "ls: patchcore+knn+cfa": [("beats_late_ls", "patchcore", ""), ("knn_ls", "knn", ""), ("beats_late_ls", "cfa", "")],
+    # decided before seeing round 3: equal weights; seeds of the same method are averaged first by listing them
+    "r3: pcb_ls + hc64_ls": [("band_pc_banks_std_ls", "patchcore", ""), ("handcrafted_64_ls", "handcrafted", "")],
+    "r3: pcb_ls(4 seeds) + hc64_ls": [[("band_pc_banks_std_ls", "patchcore", s) for s in ("", "_seed1", "_seed2", "_seed3")],
+                                      ("handcrafted_64_ls", "handcrafted", "")],
+    "r3: pcb_ls + hc64_ls + knn_ft_ls": [("band_pc_banks_std_ls", "patchcore", ""), ("handcrafted_64_ls", "handcrafted", ""), ("knn_ft_ls", "knn_ft", "")],
+    "r3: pcb_ls + hc64_ls + knn_ft_ls + knn_ls": [("band_pc_banks_std_ls", "patchcore", ""), ("handcrafted_64_ls", "handcrafted", ""),
+                                                  ("knn_ft_ls", "knn_ft", ""), ("knn_ls", "knn", "")],
+    # decided before seeing round 4
+    "r4: pcb_ls + hc64_ls + knn_ft_ls_pseudo": [("band_pc_banks_std_ls", "patchcore", ""), ("handcrafted_64_ls", "handcrafted", ""),
+                                                ("knn_ft_ls_pseudo", "knn_ft", "")],
+    "r4: pcb_ls + hc64_ls_allstats + knn_ft_ls": [("band_pc_banks_std_ls", "patchcore", ""), ("handcrafted_64_ls_allstats", "handcrafted", ""),
+                                                  ("knn_ft_ls", "knn_ft", "")],
+    "r4: pcb_ls + hc64_ls + knn_b8_10_12_ls": [("band_pc_banks_std_ls", "patchcore", ""), ("handcrafted_64_ls", "handcrafted", ""),
+                                               ("knn_b8_10_12_ls", "knn", "")],
+    "r4: cfa_ls(3 seeds) + pcb_ls + hc64_ls": [[("beats_late_ls", "cfa", s) for s in ("", "_seed1", "_seed2")],
+                                               ("band_pc_banks_std_ls", "patchcore", ""), ("handcrafted_64_ls", "handcrafted", "")],
     "knn+knn_ft": [("baseline", "knn", ""), ("knn_ft", "knn_ft", "")],
 }
 
@@ -109,7 +163,7 @@ def command_for(pair, args) -> list[str]:
     experiment, method, suffix, seed = pair
     command = [sys.executable, str(HERE / "run_dcase_grid.py"), "--base-config", str(args.base_config),
                "--experiments", experiment, "--methods", method, "--aggregation-sweep",
-               "--epochs", str(args.epochs), "--summary", str(SCRATCH_SUMMARY)]
+               "--extra-aggregations", *EXTRA_AGGREGATIONS, "--epochs", str(args.epochs), "--summary", str(SCRATCH_SUMMARY)]
     if not getattr(args, "rerun", False):
         command.append("--skip-done")
     if suffix:
@@ -142,21 +196,35 @@ def complete(run: Run, root: Path = ROOT) -> bool:
     return folder.exists() and len(read_machine_scores(folder)) == 7
 
 
+def _runs(entry) -> list[Run]:
+    return list(entry) if isinstance(entry, list) else [entry]
+
+
+def _label(entry) -> str:
+    return "+".join(f"{e}{s}:{m}" for e, m, s in _runs(entry))
+
+
+def _component(entry, root: Path):
+    scores = {_label(run_entry): read_machine_scores(run_folder(run_entry, root)) for run_entry in _runs(entry)}
+    return scores if len(scores) == 1 else fuse(scores)[0]
+
+
 def write_fusions(root: Path = ROOT, report: Path = FUSION_REPORT, plan_runs=None) -> list[str]:
     """Fuse every fusion whose runs are all complete; returns the report lines."""
     lines = ["# Fusioni DCASE 2026 (rank medio per macchina, pesi uguali, AUC source)", "",
              "| Fusione | Componenti | AUC fusa | AUC migliore componente |", "|---|---|---|---|"]
     detail = []
-    for name, runs in FUSIONS.items():
-        missing = [r for r in runs if not complete(r, root)]
+    for name, entries in FUSIONS.items():
+        missing = [r for entry in entries for r in _runs(entry) if not complete(r, root)]
         if missing:
-            lines.append(f"| {name} | {len(runs)} | n/d (mancano: {', '.join(f'{e}{s}:{m}' for e, m, s in missing)}) | |")
+            lines.append(f"| {name} | {len(entries)} | n/d (mancano: {', '.join(f'{e}{s}:{m}' for e, m, s in missing)}) | |")
             continue
-        inputs = {f"{e}{s}:{m}": read_machine_scores(run_folder((e, m, s), root)) for e, m, s in runs}
+        inputs = {_label(entry): _component(entry, root) if len(_runs(entry)) > 1 else read_machine_scores(run_folder(_runs(entry)[0], root))
+                  for entry in entries}
         fused, _ = fuse(inputs)
         best = max(mean_auc(scores)[0] for scores in inputs.values())
         fused_auc = mean_auc(fused)[0]
-        lines.append(f"| {name} | {len(runs)} | {fused_auc:.3f} | {best:.3f} |")
+        lines.append(f"| {name} | {len(entries)} | {fused_auc:.3f} | {best:.3f} |")
         detail.append(f"- {name}: " + ", ".join(f"{m} {machine_auc(s)[0]:.3f}" for m, s in sorted(fused.items())))
     lines += ["", "Per macchina:", ""] + detail
     report.parent.mkdir(parents=True, exist_ok=True)
