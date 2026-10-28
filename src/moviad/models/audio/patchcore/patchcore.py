@@ -50,6 +50,7 @@ class PatchCore(AudioVADModel):
         band_banks: bool = False,
         score_standardization: str = "none",
         holdout_fraction: float = 0.1,
+        patch_reweighting: bool = False,
     ) -> None:
         """
         Args:
@@ -70,6 +71,8 @@ class PatchCore(AudioVADModel):
             score_standardization: ``"band"`` standardises the patch scores of every frequency band
                 with the mean / std of held-out normal clips (``holdout_fraction`` of the training
                 batches, excluded from the memory bank); ``"none"`` leaves the scores untouched.
+            patch_reweighting: apply the PatchCore re-weighting (paper, section 3.3) to every patch score, so that the
+                anomaly map, and any score built from it, is re-weighted and not only the single score of the worst patch.
         """
         super().__init__(
             feature_extractor=feature_extractor,
@@ -90,6 +93,7 @@ class PatchCore(AudioVADModel):
         self.band_banks = band_banks
         self.score_standardization = score_standardization
         self.holdout_fraction = holdout_fraction
+        self.patch_reweighting = patch_reweighting
         self.register_buffer("memory_bank", Tensor())
         self.register_buffer("feature_mean", Tensor())
         self.register_buffer("feature_std", Tensor())
@@ -238,6 +242,8 @@ class PatchCore(AudioVADModel):
         scores, locations = self._patch_scores(embedding_map)  # (B, H, W)
         if self.score_mean.numel():
             scores = standardize_by_band(scores, self.score_mean, self.score_std)
+        if self.patch_reweighting:
+            scores = scores * self._patch_weights(embedding, locations.reshape(-1), width).reshape(scores.shape)
         patch_scores = scores.reshape(batch_size, -1)
         locations = locations.reshape(batch_size, -1)
         pred_scores = self.compute_anomaly_score(patch_scores, locations, embedding, width=width)
@@ -247,6 +253,22 @@ class PatchCore(AudioVADModel):
         )
         # Per time frame score: mean of the five strongest frequency responses.
         return anomaly_maps, pred_scores, temporal_topk_scores(anomaly_maps)
+
+    def _patch_weights(self, embedding: Tensor, locations: Tensor, width: int) -> Tensor:
+        """Re-weighting factor of every patch: ``1 - softmax(distance to the neighbours of its nearest bank sample)[0]``.
+
+        Small when the nearest bank sample sits in a dense region of the bank (many similar normal patches),
+        close to 1 when it is isolated. ``embedding`` is ``(B*H*W, C)`` and ``locations`` the bank index of the
+        nearest sample of each patch.
+        """
+        smallest_bank = int(self.band_bank_sizes.min()) if self.band_bank_sizes.numel() else self.memory_bank.shape[0]
+        neighbors = min(self.num_neighbors, smallest_bank)
+        if neighbors <= 1:
+            return torch.ones(embedding.shape[0], device=embedding.device)
+        bands = None if self.band_bank_sizes.numel() == 0 else torch.arange(embedding.shape[0], device=embedding.device) % width
+        support = self._support_samples(self.memory_bank[locations], neighbors, bands)
+        distances = torch.linalg.vector_norm(embedding.unsqueeze(1) - self.memory_bank[support], dim=-1)
+        return 1 - torch.softmax(distances, dim=1)[:, 0]
 
     def _band_offsets(self) -> list[int]:
         sizes = self.band_bank_sizes.tolist()

@@ -94,6 +94,11 @@ PLAN: list[tuple[str, str, str, int | None]] = [
     ("knn_ft_ls_pseudo", "knn_ft", "", None),
     ("knn_b10_12_ls", "knn", "", None),
     ("knn_b8_10_12_ls", "knn", "", None),
+    # round 5: PatchCore re-weighting of every patch
+    ("beats_late_ls_rw", "patchcore", "", None),
+    ("band_pc_banks_ls", "patchcore", "", None),
+    ("band_pc_banks_ls_rw", "patchcore", "", None),
+    ("band_pc_banks_std_ls_rw", "patchcore", "", None),
     # STFPM: optimiser and BEATs student
     ("baseline", "stfpm", "", None),
     ("stfpm_sgd_lr0p1", "stfpm", "", None),

@@ -165,3 +165,18 @@ def test_checkpoints_without_the_band_buffers_still_load():
     restored.load_state_dict(legacy)  # strict: the new buffers are optional
 
     assert torch.equal(restored.memory_bank, plain.memory_bank)
+
+
+@pytest.mark.parametrize("band_banks", [False, True])
+def test_patch_reweighting_scales_scores_into_zero_and_the_plain_score(band_banks):
+    plain = make_model(band_banks=band_banks)
+    plain.fit(loader())
+    weighted = make_model(band_banks=band_banks, patch_reweighting=True)
+    weighted.fit(loader())
+    plain.eval(), weighted.eval()
+    clips = torch.randn(3, FRAMES * BANDS, generator=torch.Generator().manual_seed(5)) + 0.5
+    plain_map, _, _ = plain(clips)
+    weighted_map, _, _ = weighted(clips)
+    assert weighted_map.shape == plain_map.shape
+    assert (weighted_map <= plain_map + 1e-5).all()  # the weight is in (0, 1) and the scores are non-negative
+    assert (weighted_map < plain_map).any()

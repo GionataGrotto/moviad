@@ -408,6 +408,7 @@ def make_model(
             band_banks=bool(config.get("patchcore_band_banks", False)),
             score_standardization=config.get("patchcore_score_std", "none"),
             holdout_fraction=float(config.get("score_std_holdout", 0.1)),
+            patch_reweighting=bool(config.get("patchcore_reweighting", False)),
         ).to(device)
 
     if method == "knn_ft":

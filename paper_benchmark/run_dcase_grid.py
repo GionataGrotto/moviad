@@ -145,6 +145,16 @@ EXPERIMENTS = {
     "knn_b10_12_ls": ("kNN blocks 10 and 12 on LS", {"knn_layers": [10, 12], "dcase2026": {"channel": "ls"}}, {"knn"}),
     "knn_b8_10_12_ls": ("kNN blocks 8, 10, 12 on LS", {"knn_layers": [8, 10, 12], "dcase2026": {"channel": "ls"}}, {"knn"}),
 
+    # ---- PatchCore re-weighting applied to every patch (not only to the single worst patch, as with "max") ----
+    "beats_late_ls_rw": ("beats_late on LS, PatchCore re-weighting of every patch",
+                         {**BEATS_LATE, "patchcore_reweighting": True, "dcase2026": {"channel": "ls"}}, {"patchcore"}),
+    "band_pc_banks_ls": ("PatchCore per-band banks on LS (reference of the re-weighting run)",
+                         {**BEATS_LATE, "patchcore_band_banks": True, "dcase2026": {"channel": "ls"}}, {"patchcore"}),
+    "band_pc_banks_ls_rw": ("PatchCore per-band banks on LS, re-weighting", 
+                            {**BEATS_LATE, "patchcore_band_banks": True, "patchcore_reweighting": True, "dcase2026": {"channel": "ls"}}, {"patchcore"}),
+    "band_pc_banks_std_ls_rw": ("PatchCore per-band banks + std on LS, re-weighting",
+                                {**BEATS_LATE, "patchcore_band_banks": True, "patchcore_score_std": "band", "patchcore_reweighting": True,
+                                 "dcase2026": {"channel": "ls"}}, {"patchcore"}),
     "knn_b12": ("kNN on BEATs block 12", {"knn_layers": [12]}, {"knn"}),
     "handcrafted": ("sub-band statistics + shrunk Mahalanobis", {}, {"handcrafted"}),
     "handcrafted_64": ("64 sub-bands + shrunk Mahalanobis", {"handcrafted_bands": 64}, {"handcrafted"}),
