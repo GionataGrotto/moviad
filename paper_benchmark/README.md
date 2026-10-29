@@ -369,6 +369,18 @@ che cambia), `ls_global` (un filtro per macchina stimato sui clip di training). 
 (fan, ToyCar). `error_analysis.py --scores <cartella> --machine <m> --attributes <ground_truth_attributes>` mostra
 AUC per attributo, anomalie mancate e falsi allarmi.
 
+**Evaluation set** (`run_eval.py`, `score_eval.py`). Il dataset di valutazione (test: Zenodo 20437238; training aggiuntivo:
+20151556) ha le macchine BlowerDustCollector, Sander, SewingMachine, ToothBrush, ToyDrone, in `<macchina>/train` e
+`<macchina>/test`; i clip di test hanno nomi anonimi (`section_00_0001.wav`) e source/target e normale/anomalo si leggono
+dalle etichette del valutatore in `dcase2026_task2_evaluator/ground_truth_*`. `run_eval.py` addestra sul solo source,
+valuta l'AUC sui clip source e scrive `results/paper_benchmark/eval_dcase2026.md` con tre letture: configurazione fissata
+in anticipo, migliore sul dev, migliore guardando l'evaluation (oracolo). Contiene anche la verifica del LS (con e senza).
+`score_eval.py --scores <cartella> ...` valuta cartelle di punteggi qualsiasi.
+
+```bash
+uv run python paper_benchmark/run_eval.py --base-config paper_benchmark/config.eval.json
+```
+
 `diagnose_signal_features.py --dataset-path <DCASE>` calcola per macchina l'AUC di semplici statistiche
 del segnale (RMS, centroide spettrale, piattezza, quota di alte frequenze): serve a capire se un'inversione
 sistematica (AUC sotto 0,5) dipende dall'energia del clip.

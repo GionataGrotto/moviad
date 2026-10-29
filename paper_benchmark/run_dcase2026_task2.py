@@ -421,7 +421,8 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
             extra_dir / f"train_anomaly_score_{machine}_section_00_train.csv", train_paths, train_by_aggregation[name]
         )
         _write_pairs(extra_dir / f"anomaly_score_{machine}_section_00_test.csv", test_paths, test_by_aggregation[name])
-    _write_dev_ground_truth(dataset_path, evaluator_root, machine, test_paths)
+    if (labels >= 0).any():  # the evaluation set has no labels: the ground truth comes with the evaluator
+        _write_dev_ground_truth(dataset_path, evaluator_root, machine, test_paths)
     return result
 
 

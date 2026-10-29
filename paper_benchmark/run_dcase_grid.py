@@ -155,6 +155,8 @@ EXPERIMENTS = {
     "band_pc_banks_std_ls_rw": ("PatchCore per-band banks + std on LS, re-weighting",
                                 {**BEATS_LATE, "patchcore_band_banks": True, "patchcore_score_std": "band", "patchcore_reweighting": True,
                                  "dcase2026": {"channel": "ls"}}, {"patchcore"}),
+    "handcrafted_96": ("96 sub-bands + shrunk Mahalanobis", {"handcrafted_bands": 96}, {"handcrafted"}),
+    "knn_b8_10_12": ("kNN blocks 8, 10, 12", {"knn_layers": [8, 10, 12]}, {"knn"}),
     "knn_b12": ("kNN on BEATs block 12", {"knn_layers": [12]}, {"knn"}),
     "handcrafted": ("sub-band statistics + shrunk Mahalanobis", {}, {"handcrafted"}),
     "handcrafted_64": ("64 sub-bands + shrunk Mahalanobis", {"handcrafted_bands": 64}, {"handcrafted"}),

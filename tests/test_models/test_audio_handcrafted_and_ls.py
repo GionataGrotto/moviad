@@ -89,3 +89,17 @@ def test_unknown_statistic_or_scorer_is_rejected():
         SubbandStatsEncoder(stats=("median",))
     with pytest.raises(ValueError):
         SubbandMahalanobis(SubbandStatsEncoder(), torch.device("cpu"), scorer="svm")
+
+
+def test_unlabelled_evaluation_test_clips_are_loaded_for_any_requested_domain(tmp_path):
+    import torchaudio
+
+    from moviad.datasets.dcase2026_task2 import DCASE2026Task2Dataset
+
+    machine = tmp_path / "toy" / "test"
+    machine.mkdir(parents=True)
+    for index in (1, 2):
+        torchaudio.save(str(machine / f"section_00_{index:04d}.wav"), torch.randn(2, SR), SR)
+    dataset = DCASE2026Task2Dataset(tmp_path, "toy", "test", domain="source", target_sample_rate=16000)
+    assert len(dataset) == 2
+    assert dataset[0][1] == -1 and dataset[0][2].endswith("section_00_0001.wav")

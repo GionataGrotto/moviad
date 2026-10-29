@@ -34,9 +34,20 @@ class DCASERecord:
     attribute: str = ""
 
 
+#: evaluation-set test clips carry neither label nor domain in their name: ``section_00_0001.wav``
+EVAL_TEST_RE = re.compile(r"^section_(?P<section>\d+)_\d+\.wav$", re.IGNORECASE)
+UNKNOWN_DOMAIN = "unknown"
+
+
 def parse_dcase_filename(path: Path, machine_type: str) -> DCASERecord:
     match = FILENAME_RE.match(path.name)
     if match is None:
+        eval_match = EVAL_TEST_RE.match(path.name)
+        if eval_match is not None:  # label -1 and domain "unknown": scored, never evaluated by this code
+            return DCASERecord(
+                path=path, machine_type=machine_type, section=f"{int(eval_match['section']):02d}",
+                domain=UNKNOWN_DOMAIN, split="test", label=-1,
+            )
         raise ValueError(f"Not a DCASE 2026 Task 2 filename: {path.name}")
     groups = match.groupdict()
     return DCASERecord(
@@ -167,7 +178,7 @@ class DCASE2026Task2Dataset(Dataset):
             if record.split != self.split:
                 continue
             requested_domain = self.train_domains if self.split == "train" else self.domain
-            if requested_domain != "all" and record.domain != requested_domain:
+            if requested_domain != "all" and record.domain not in (requested_domain, UNKNOWN_DOMAIN):
                 continue
             if self.split == "train" and record.label != 0:
                 continue
