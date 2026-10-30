@@ -99,6 +99,16 @@ PLAN: list[tuple[str, str, str, int | None]] = [
     ("band_pc_banks_ls", "patchcore", "", None),
     ("band_pc_banks_ls_rw", "patchcore", "", None),
     ("band_pc_banks_std_ls_rw", "patchcore", "", None),
+    # round 6: blocks with LS, target clips with LS, five seeds of CFA with LS
+    ("band_pc_banks_std_ls_b10_11_12", "patchcore", "", None),
+    ("band_pc_banks_std_ls_b6_9_12", "patchcore", "", None),
+    ("band_pc_banks_std_ls_train_all", "patchcore", "", None),
+    ("beats_padim_full_cov_ls_train_all", "padim", "", None),
+    ("beats_b12_ls_train_all", "cfa", "", None),
+    ("beats_b12_ls", "cfa", "_seed1", 1),
+    ("beats_b12_ls", "cfa", "_seed2", 2),
+    ("beats_b12_ls", "cfa", "_seed3", 3),
+    ("beats_b12_ls", "cfa", "_seed4", 4),
     # STFPM: optimiser and BEATs student
     ("baseline", "stfpm", "", None),
     ("stfpm_sgd_lr0p1", "stfpm", "", None),
