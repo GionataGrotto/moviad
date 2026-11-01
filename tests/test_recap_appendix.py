@@ -19,7 +19,7 @@ def test_appendix_lists_results_pending_experiments_and_replaces_itself(tmp_path
     rows = [{"method": "knn", "machine": m, "auc_source": 0.6, "channel": 0, "backbone": "Cnn14", "layers": [], "seed": 1, "train_domain": "source"}
             for m in appendix.MACHINES]
     (dev / "dcase2026_task2_results.json").write_text(json.dumps(rows))
-    lines = appendix.build(tmp_path / "dev", None)
+    lines = appendix.build([tmp_path / "dev"], None)
     text = "\n".join(lines)
     assert "**0.600**" in text and "baseline" in text
     assert "`handcrafted`" in text  # an experiment without results is listed as pending

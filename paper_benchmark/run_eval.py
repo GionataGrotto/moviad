@@ -26,6 +26,9 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
+import numpy as np  # noqa: E402
+from scipy.stats import hmean  # noqa: E402
+
 from fuse_scores import fuse, read_machine_scores  # noqa: E402
 from score_eval import GT_ROOT, eval_machines, evaluate, mean_metric  # noqa: E402
 
@@ -47,6 +50,10 @@ DEV_AUC = {
     ("beats_padim_full_cov_ls", "padim"): 0.656,
     ("beats_b12_ls", "cfa"): 0.620,
     ("dinomaly_ls", "dinomaly"): 0.546,
+    # with LS and the 10 target clips in the training set (the official protocol): see TARGET_PAIRS
+    ("band_pc_banks_std_ls_train_all", "patchcore"): 0.706,
+    ("beats_padim_full_cov_ls_train_all", "padim"): 0.655,
+    ("beats_b12_ls_train_all", "cfa"): 0.649,
     # without LS: the check of the LS
     ("band_pc_banks_std", "patchcore"): 0.638,
     ("handcrafted_96", "handcrafted"): None,
@@ -57,6 +64,12 @@ DEV_AUC = {
     ("baseline", "dinomaly"): 0.535,
 }
 PAIRS = list(DEV_AUC)
+#: (trained on source + target, trained on source only): what the target clips change, on the source and on the target AUC
+TARGET_PAIRS = [
+    (("band_pc_banks_std_ls_train_all", "patchcore"), ("band_pc_banks_std_ls", "patchcore")),
+    (("beats_padim_full_cov_ls_train_all", "padim"), ("beats_padim_full_cov_ls", "padim")),
+    (("beats_b12_ls_train_all", "cfa"), ("beats_b12_ls", "cfa")),
+]
 DEV_FIXED_NO_LS: list = []  # pairs without LS that are needed even when the LS check is skipped (none)
 FIXED_FUSION = "PatchCore LS + handcrafted_64 LS + knn_ft LS"
 #: name -> (components, dev AUC of the fusion or None); all of them were fixed before any evaluation result was seen
@@ -107,6 +120,12 @@ def run_pair(pair, args, runner=subprocess.run) -> bool:
     return False
 
 
+def official_score(result: dict) -> float:
+    """The evaluator's score: harmonic mean of the source AUC, the target AUC and the pAUC of every machine (x 100)."""
+    values = ([m["auc_source"] for m in result.values()] + [m["auc_target"] for m in result.values()] + [m["pauc_all"] for m in result.values()])
+    return float(hmean(np.maximum(np.array(values, dtype=float), 1e-12))) * 100
+
+
 def dev_text(value) -> str:
     return "-" if value is None else f"{value:.3f}"
 
@@ -135,12 +154,13 @@ def build_report(root: Path = ROOT, gt_root: Path = GT_ROOT) -> list[str]:
     columns = " | ".join(machines)
     lines = ["# Evaluation set DCASE 2026 Task 2: AUC source (training sul solo source)", "",
              f"Macchine: {', '.join(machines)}. AUC calcolata sui clip source del test con le etichette del valutatore.", "",
-             "## Configurazioni singole", "", f"| Esperimento | Metodo | AUC source | AUC dev | {columns} |", "|---|---|---|---|" + "---|" * len(machines)]
+             "## Configurazioni singole", "", f"| Esperimento | Metodo | AUC source | AUC target | Punteggio ufficiale | AUC dev | {columns} |", "|---|---|---|---|---|---|" + "---|" * len(machines)]
     for pair in PAIRS:
         if pair in results:
-            lines.append(f"| {pair[0]} | {pair[1]} | {mean_metric(results[pair]):.3f} | {dev_text(DEV_AUC[pair])} | {per_machine(results[pair])} |")
+            lines.append(f"| {pair[0]} | {pair[1]} | {mean_metric(results[pair]):.3f} | {mean_metric(results[pair], 'auc_target'):.3f} | "
+                         f"{official_score(results[pair]):.1f} | {dev_text(DEV_AUC[pair])} | {per_machine(results[pair])} |")
         else:
-            lines.append(f"| {pair[0]} | {pair[1]} | n/d | {dev_text(DEV_AUC[pair])} | |")
+            lines.append(f"| {pair[0]} | {pair[1]} | n/d | | | {dev_text(DEV_AUC[pair])} | |")
     lines += ["", "## Fusioni (rank medio per macchina, pesi uguali)", "", f"| Fusione | AUC source | AUC dev | {columns} |", "|---|---|---|" + "---|" * len(machines)]
     for name, (_, dev) in FUSIONS.items():
         label = name + (" (fissata in anticipo)" if name == FIXED_FUSION else "")
@@ -152,6 +172,14 @@ def build_report(root: Path = ROOT, gt_root: Path = GT_ROOT) -> list[str]:
         if with_ls in results and without in results:
             a, b = mean_metric(results[with_ls]), mean_metric(results[without])
             lines.append(f"| {with_ls[0]}:{with_ls[1]} | {without[0]}:{without[1]} | {a:.3f} | {b:.3f} | {a - b:+.3f} | {dev_diff(with_ls, without)} |")
+    lines += ["", "## Con i 10 clip target nel training (protocollo ufficiale) e senza", "",
+              "| Metodo | Con target: source | Con target: target | Con target: ufficiale | Senza: source | Senza: target | Senza: ufficiale | Differenza ufficiale |",
+              "|---|---|---|---|---|---|---|---|"]
+    for with_target, without in TARGET_PAIRS:
+        if with_target in results and without in results:
+            a_, b_ = results[with_target], results[without]
+            lines.append(f"| {with_target[1]} ({with_target[0]}) | {mean_metric(a_):.3f} | {mean_metric(a_, 'auc_target'):.3f} | {official_score(a_):.1f} | "
+                         f"{mean_metric(b_):.3f} | {mean_metric(b_, 'auc_target'):.3f} | {official_score(b_):.1f} | {official_score(a_) - official_score(b_):+.1f} |")
     singles = {f"{p[0]}:{p[1]}": mean_metric(r) for p, r in results.items()}
     fusion_aucs = {n: mean_metric(r) for n, r in fused.items()}
     lines += ["", "## Tarata e non tarata", ""]

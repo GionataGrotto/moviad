@@ -2,8 +2,8 @@
 
     python paper_benchmark/build_recap_appendix.py --dev-dir ~/Downloads/dev --eval-scores ~/Downloads/eval_scores
 
-``--dev-dir`` holds ``grid_<name>/dcase2026_task2_results.json`` (one per dev run, as copied from the machine that ran
-the grid); ``--eval-scores`` holds ``dcase2026_task2_evaluator/dev/grid_<name>_eval/teams/moviad/<method>`` (the
+``--dev-dir`` (one or more folders) holds ``grid_<name>/dcase2026_task2_results.json`` (one per dev run) and/or
+``grid_<name>/teams/moviad/<method>`` (the score files: the AUC is then computed from the file names); ``--eval-scores`` holds ``dcase2026_task2_evaluator/dev/grid_<name>_eval/teams/moviad/<method>`` (the
 evaluation-set scores). The appendix replaces what is between its two markers in
 ``results/paper_benchmark/recap_dcase2026.md`` (it is added at the end the first time), so it can be regenerated whenever
 new results arrive.
@@ -21,6 +21,7 @@ from scipy.stats import hmean
 
 from fuse_scores import read_machine_scores
 from run_dcase_grid import EXPERIMENTS, MACHINES
+from score_dcase_csv import evaluate_folder
 from score_eval import evaluate, eval_machines
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -41,33 +42,72 @@ def describe(name: str) -> str:
     return EXPERIMENTS[name][0] if name in EXPERIMENTS else "(experiment no longer defined)"
 
 
-def dev_rows(dev_dir: Path) -> list[dict]:
+def _csv_rows(run_dir: Path, run: str) -> list[dict]:
+    """Rows of a run that only has score files (no results json): the AUC comes from the file names."""
+    team = run_dir / "teams" / "moviad"
     rows = []
-    for path in sorted(Path(dev_dir).glob("grid_*/dcase2026_task2_results.json")):
-        run = path.parent.name
-        if run.endswith("_eval"):
+    for method_dir in sorted(team.glob("*")) if team.exists() else []:
+        if "@" in method_dir.name:
             continue
-        try:
-            records = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        per_machine = evaluate_folder(method_dir, "source")
+        aucs = {m: v[0] for m, v in per_machine.items() if v[0] is not None}
+        if not aucs:
             continue
-        by_method: dict[str, dict] = {}
-        for record in records:
-            if record.get("auc_source") is not None:
-                by_method.setdefault(record["method"], {})[record["machine"]] = record
-        for method, machines in by_method.items():
-            aucs = [machines[m]["auc_source"] for m in MACHINES if m in machines]
-            name, suffix = split_run_name(run)
-            first = next(iter(machines.values()))
-            extras = {}
-            for agg in ("mean", "top10pct", "max"):
-                values = [machines[m]["extra_aggregations"][agg]["auc_source"] for m in machines if agg in machines[m].get("extra_aggregations", {})]
-                if len(values) == len(machines):
-                    extras[agg] = float(np.mean(values))
-            rows.append({"experiment": name, "suffix": suffix, "method": method, "n": len(aucs), "auc": float(np.mean(aucs)),
-                         "per_machine": [machines[m]["auc_source"] if m in machines else None for m in MACHINES],
-                         "channel": first.get("channel"), "backbone": first.get("backbone"), "layers": first.get("layers"),
-                         "seed": first.get("seed"), "train": first.get("train_domain"), "extras": extras})
+        extras = {}
+        for agg in ("mean", "top10pct", "max"):
+            folder = team / f"{method_dir.name}@{agg}"
+            values = [v[0] for v in evaluate_folder(folder, "source").values() if v[0] is not None] if folder.exists() else []
+            if len(values) == len(aucs):
+                extras[agg] = float(np.mean(values))
+        name, suffix = split_run_name(run)
+        rows.append({"experiment": name, "suffix": suffix, "method": method_dir.name, "n": len(aucs),
+                     "auc": float(np.mean([aucs[m] for m in MACHINES if m in aucs])),
+                     "per_machine": [aucs.get(m) for m in MACHINES], "channel": None, "backbone": None, "layers": None,
+                     "seed": None, "train": None, "extras": extras})
+    return rows
+
+
+def dev_rows(*dev_dirs: Path) -> list[dict]:
+    """Dev rows from result jsons and/or score folders; a (run, method) found as a json wins over the same one from scores."""
+    rows, seen = [], set()
+    for dev_dir in dev_dirs:
+        for run_dir in sorted(Path(dev_dir).glob("grid_*")):
+            run = run_dir.name
+            if run.endswith("_eval"):
+                continue
+            path = run_dir / "dcase2026_task2_results.json"
+            found = _json_rows(path, run) if path.exists() else _csv_rows(run_dir, run)
+            for row in found:
+                key = (run, row["method"])
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(row)
+    return rows
+
+
+def _json_rows(path: Path, run: str) -> list[dict]:
+    rows = []
+    try:
+        records = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return rows
+    by_method: dict[str, dict] = {}
+    for record in records:
+        if record.get("auc_source") is not None:
+            by_method.setdefault(record["method"], {})[record["machine"]] = record
+    for method, machines in by_method.items():
+        aucs = [machines[m]["auc_source"] for m in MACHINES if m in machines]
+        name, suffix = split_run_name(run)
+        first = next(iter(machines.values()))
+        extras = {}
+        for agg in ("mean", "top10pct", "max"):
+            values = [machines[m]["extra_aggregations"][agg]["auc_source"] for m in machines if agg in machines[m].get("extra_aggregations", {})]
+            if len(values) == len(machines):
+                extras[agg] = float(np.mean(values))
+        rows.append({"experiment": name, "suffix": suffix, "method": method, "n": len(aucs), "auc": float(np.mean(aucs)),
+                     "per_machine": [machines[m]["auc_source"] if m in machines else None for m in MACHINES],
+                     "channel": first.get("channel"), "backbone": first.get("backbone"), "layers": first.get("layers"),
+                     "seed": first.get("seed"), "train": first.get("train_domain"), "extras": extras})
     return rows
 
 
@@ -96,8 +136,8 @@ def fmt(value) -> str:
     return "-" if value is None else f"{value:.2f}"
 
 
-def build(dev_dir: Path, eval_root: Path | None) -> list[str]:
-    rows = dev_rows(dev_dir)
+def build(dev_dirs: list[Path], eval_root: Path | None) -> list[str]:
+    rows = dev_rows(*dev_dirs)
     lines = [START, "", "## Appendice: tutti gli esperimenti", "",
              "Generata da `paper_benchmark/build_recap_appendix.py` a partire dai risultati salvati.", "",
              "### Dev (AUC source, 7 macchine, training sul solo source salvo dove indicato)", "",
@@ -143,11 +183,11 @@ def write(recap: Path, lines: list[str]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--dev-dir", type=Path, required=True)
+    parser.add_argument("--dev-dir", type=Path, nargs="+", required=True, help="folders with grid_*/ (results json and/or teams/ scores); the first has priority")
     parser.add_argument("--eval-scores", type=Path, default=None)
     parser.add_argument("--recap", type=Path, default=RECAP)
     args = parser.parse_args()
-    lines = build(args.dev_dir.expanduser(), args.eval_scores.expanduser() if args.eval_scores else None)
+    lines = build([d.expanduser() for d in args.dev_dir], args.eval_scores.expanduser() if args.eval_scores else None)
     write(args.recap, lines)
     print(f"appendix written to {args.recap} ({len(lines)} lines)")
 

@@ -47,3 +47,12 @@ def test_report_is_built_from_saved_scores(tmp_path):
             csv.writer(handle, lineterminator="\n").writerows([[f"section_00_{i:04d}.wav", s] for i, s in enumerate([0.1, 0.9, 0.2, 0.8], 1)])
     text = "\n".join(run_eval.build_report(tmp_path, gt))
     assert "fissata in anticipo" in text and "1.000" in text and "Verifica del LS" in text
+
+
+def test_target_pairs_are_in_the_plan_and_the_official_score_is_a_harmonic_mean():
+    for with_target, without in run_eval.TARGET_PAIRS:
+        assert with_target in run_eval.DEV_AUC and without in run_eval.DEV_AUC
+    result = {"a": {"auc_source": 0.8, "auc_target": 0.8, "pauc_all": 0.8}, "b": {"auc_source": 0.8, "auc_target": 0.8, "pauc_all": 0.8}}
+    assert abs(run_eval.official_score(result) - 80.0) < 1e-6
+    result["b"]["auc_target"] = 0.4
+    assert run_eval.official_score(result) < 80.0 * 0.95
