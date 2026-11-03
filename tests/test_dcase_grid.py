@@ -21,7 +21,9 @@ def test_every_experiment_changes_one_factor_and_fixes_the_test_protocol():
     assert grid.build_config(base, "near_minus_far", 5)["dcase2026"]["channel"] == "diff"
     for name in grid.EXPERIMENTS:
         config = grid.build_config(base, name, 5)
-        assert config["dcase2026"]["test_domain"] == "source"
+        # the round-7 experiments are tested on both domains on purpose (the target protocol); every other one on the source only
+        expected = grid.EXPERIMENTS[name][1].get("dcase2026", {}).get("test_domain", "source")
+        assert config["dcase2026"]["test_domain"] == expected
         assert config["dcase2026"]["run_name"] == f"grid_{name}"
         assert config["dcase2026"]["dataset_path"] == "/data"  # untouched keys survive the merge
     assert base["dcase2026"] == {"dataset_path": "/data", "channel": 0}  # the base config is not mutated
@@ -263,3 +265,22 @@ def test_stfpm_experiments_set_the_optimizer_and_only_run_stfpm():
     for name in ("stfpm_sgd_lr0p1", "stfpm_adamw_1e4", "stfpm_beats_late_adamw_1e4"):
         assert grid.methods_for(name, ["patchcore", "stfpm", "cfa"]) == ["stfpm"]
     assert "baseline" in grid.PRESETS["stfpm_search"] and "layers_deep" in grid.PRESETS["stfpm_search"]
+
+
+def test_target_protocol_experiments_test_on_both_domains_and_train_with_the_target_clips():
+    base = {"dcase2026": {"dataset_path": "/data"}}
+    for name in grid.PRESETS["target_domain"]:
+        config = grid.build_config(base, name, 5)
+        assert config["dcase2026"]["test_domain"] == "all" and config["dcase2026"]["channel"] == "ls"
+    assert grid.build_config(base, "tgt_pc_source_only", 5)["dcase2026"]["train_domains"] == "source"
+    assert grid.build_config(base, "tgt_pc_quota25", 5)["patchcore_target_fraction"] == 0.25
+    assert grid.build_config(base, "tgt_pc_pseudo_coral", 5)["patchcore_domain_transfer"] == "coral"
+    ssl = grid.build_config(base, "ssl_pc_mask_ls", 5)
+    assert ssl["beats_ssl"]["objective"] == "mask" and ssl["beats_ssl"]["signal"] == "ls" and ssl["dcase2026"]["channel"] == "ls"
+    assert grid.build_config(base, "ssl_pc_contrastive_near", 5)["dcase2026"]["channel"] == 0
+    assert grid.build_config(base, "ssl_pc_reg_ls_shared", 5)["beats_adapter"] == "adapters/ssl_reg_ls.pt"
+    dino = grid.build_config(base, "dino_beats_ls_tw_l2", 5)
+    assert dino["backbone"] == "BEATs" and dino["dinomaly_distance"] == "l2" and dino["train_target_weight"] == "balance"
+    assert len(dino["layers"]) == 8
+    for name in grid.PRESETS["dinomaly_beats"]:
+        assert grid.EXPERIMENTS[name][2] == {"dinomaly"}

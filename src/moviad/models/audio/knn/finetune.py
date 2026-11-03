@@ -29,11 +29,14 @@ class LoRALinear(nn.Module):
         nn.init.kaiming_uniform_(self.lora_a.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_b.weight)
         self.scale = alpha / rank
+        self.active = True  # False: the layer behaves as the frozen base one (the teacher of a self-supervised adaptation)
 
     # Some attention implementations (fairseq-style fast paths) read ``q_proj.weight`` / ``.bias`` directly instead of
     # calling the layer: expose the adapted weight, with gradient, so they see the low-rank update as well.
     @property
     def weight(self):
+        if not self.active:
+            return self.base.weight
         return self.base.weight + self.scale * (self.lora_b.weight @ self.lora_a.weight)
 
     @property
@@ -49,6 +52,8 @@ class LoRALinear(nn.Module):
         return self.base.out_features
 
     def forward(self, x):
+        if not self.active:
+            return self.base(x)
         return self.base(x) + self.scale * self.lora_b(self.lora_a(x))
 
 

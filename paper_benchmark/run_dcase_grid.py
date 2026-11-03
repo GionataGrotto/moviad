@@ -215,6 +215,84 @@ def deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Round 7: the target domain (PatchCore), a self-supervised BEATs, and Dinomaly on BEATs.
+# Every experiment below is tested on BOTH domains and trained with the 10 target clips (the DCASE protocol), so that the
+# source AUC, the target AUC and the official-style score can be read with ``dev_domains.py`` and compared with each other.
+# ---------------------------------------------------------------------------------------------------------------------
+_PCB_LS = {**BEATS_LATE, "patchcore_band_banks": True, "patchcore_score_std": "band"}
+_BOTH = {"test_domain": "all", "train_domains": "all"}
+_LS = {"channel": "ls"}
+_DINO_LAYERS = [3, 4, 5, 6, 7, 8, 9, 10]  # Dinomaly takes 8 consecutive blocks of a 12-block ViT
+_SSL = {"epochs": 5, "lr": 1e-4, "rank": 8, "batch_size": 8}
+
+
+def _define(name, description, overrides, methods):
+    EXPERIMENTS[name] = (description, overrides, methods)
+
+
+def _patchcore(**extra):
+    dcase = {**_BOTH, **extra.pop("dcase", {})}
+    return {**_PCB_LS, **extra, "dcase2026": dcase}
+
+
+# references: the same PatchCore tested on both domains, with and without the target clips in the training set
+_define("tgt_pc_source_only", "PatchCore LS, trained on source only, tested on both domains",
+        _patchcore(dcase={"channel": "ls", "train_domains": "source"}), {"patchcore"})
+_define("tgt_pc_plain", "PatchCore LS, source + 10 target clips (the official protocol), tested on both domains",
+        _patchcore(dcase=_LS), {"patchcore"})
+# a reserved share of the bank for the target patches
+for _share in (10, 25, 50):
+    _define(f"tgt_pc_quota{_share}", f"PatchCore LS, {_share}% of the bank reserved for the target patches",
+            _patchcore(patchcore_target_fraction=_share / 100, dcase=_LS), {"patchcore"})
+# source patches mapped to the target statistics
+_define("tgt_pc_pseudo_meanstd", "PatchCore LS, 10% target quota + 25% pseudo-target (mean/std transfer)",
+        _patchcore(patchcore_target_fraction=0.10, patchcore_pseudo_fraction=0.25, patchcore_domain_transfer="meanstd", dcase=_LS), {"patchcore"})
+_define("tgt_pc_pseudo_coral", "PatchCore LS, 10% target quota + 25% pseudo-target (CORAL transfer)",
+        _patchcore(patchcore_target_fraction=0.10, patchcore_pseudo_fraction=0.25, patchcore_domain_transfer="coral", dcase=_LS), {"patchcore"})
+# more target clips: augmentation
+_define("tgt_pc_aug10", "PatchCore LS, + 10 augmentations of every target clip, in the normal stream",
+        _patchcore(target_augment_copies=10, dcase=_LS), {"patchcore"})
+_define("tgt_pc_aug10_quota25", "PatchCore LS, 10 augmentations per target clip + 25% target quota",
+        _patchcore(target_augment_copies=10, patchcore_target_fraction=0.25, dcase=_LS), {"patchcore"})
+_define("tgt_pc_aug10mix_quota25", "PatchCore LS, augmentations mixed lightly with source clips + 25% target quota",
+        _patchcore(target_augment_copies=10, target_augment_mix=True, patchcore_target_fraction=0.25, dcase=_LS), {"patchcore"})
+
+# self-supervised BEATs for PatchCore: the adapters are trained for each machine before the memory bank is built
+for _objective in ("reg", "mask", "contrastive"):
+    _define(f"ssl_pc_{_objective}_near", f"PatchCore on near, BEATs adapted per machine ({_objective}, near signal)",
+            _patchcore(beats_ssl={"objective": _objective, "signal": "near", **_SSL}, dcase={"channel": 0}), {"patchcore"})
+    _define(f"ssl_pc_{_objective}_ls", f"PatchCore on LS, BEATs adapted per machine ({_objective}, LS signal)",
+            _patchcore(beats_ssl={"objective": _objective, "signal": "ls", **_SSL}, dcase=_LS), {"patchcore"})
+_define("ssl_pc_reg_near_on_ls", "PatchCore on LS, BEATs adapted per machine (reg, near signal)",
+        _patchcore(beats_ssl={"objective": "reg", "signal": "near", **_SSL}, dcase=_LS), {"patchcore"})
+# one adaptation shared by all the machines (train_beats_ssl.py writes the file; run_all.py makes it when it is missing)
+for _objective in ("reg", "mask", "contrastive"):
+    _define(f"ssl_pc_{_objective}_ls_shared", f"PatchCore on LS, one BEATs adapter shared by the machines ({_objective}, LS signal)",
+            _patchcore(beats_adapter=f"adapters/ssl_{_objective}_ls.pt", dcase=_LS), {"patchcore"})
+
+# Dinomaly on BEATs (+ LS)
+_dino = {"backbone": "BEATs", "layers": _DINO_LAYERS}
+_define("dino_beats_ls", "Dinomaly on BEATs + LS (cosine)", {**_dino, "dcase2026": _LS}, {"dinomaly"})
+_define("dino_beats_ls_l2", "Dinomaly on BEATs + LS, L2 distance", {**_dino, "dinomaly_distance": "l2", "dcase2026": _LS}, {"dinomaly"})
+_define("dino_beats_ls_both", "Dinomaly on BEATs + LS, + 10 target clips, tested on both domains",
+        {**_dino, "dcase2026": {**_BOTH, **_LS}}, {"dinomaly"})
+_define("dino_beats_ls_tw", "Dinomaly on BEATs + LS, target clips (10 augmentations each) sampled as often as the source ones",
+        {**_dino, "train_target_weight": "balance", "target_augment_copies": 10, "dcase2026": {**_BOTH, **_LS}}, {"dinomaly"})
+_define("dino_beats_ls_tw_l2", "Dinomaly on BEATs + LS, balanced target clips, L2 distance",
+        {**_dino, "dinomaly_distance": "l2", "train_target_weight": "balance", "target_augment_copies": 10, "dcase2026": {**_BOTH, **_LS}}, {"dinomaly"})
+_define("dino_beats_ls_ssl", "Dinomaly on BEATs + LS, BEATs adapted per machine (reg, LS signal)",
+        {**_dino, "beats_ssl": {"objective": "reg", "signal": "ls", **_SSL}, "dcase2026": _LS}, {"dinomaly"})
+_define("dino_beats_ls_ssl_tw", "Dinomaly on adapted BEATs + LS with balanced target clips",
+        {**_dino, "beats_ssl": {"objective": "reg", "signal": "ls", **_SSL}, "train_target_weight": "balance", "target_augment_copies": 10,
+         "dcase2026": {**_BOTH, **_LS}}, {"dinomaly"})
+
+PRESETS["target_domain"] = ["tgt_pc_source_only", "tgt_pc_plain", "tgt_pc_quota10", "tgt_pc_quota25", "tgt_pc_quota50", "tgt_pc_pseudo_meanstd",
+                            "tgt_pc_pseudo_coral", "tgt_pc_aug10", "tgt_pc_aug10_quota25", "tgt_pc_aug10mix_quota25"]
+PRESETS["ssl_patchcore"] = [name for name in EXPERIMENTS if name.startswith("ssl_pc_")]
+PRESETS["dinomaly_beats"] = [name for name in EXPERIMENTS if name.startswith("dino_beats_")]
+
+
 def build_config(base: dict, name: str, epochs: int | None, aggregation: str = "temporal_topk_mean", suffix: str = "",
                  extra_aggregations: tuple[str, ...] = ()) -> dict:
     description, overrides, _ = EXPERIMENTS[name]
@@ -224,7 +302,9 @@ def build_config(base: dict, name: str, epochs: int | None, aggregation: str = "
     # the aggregation is a default an experiment may change; the test protocol is fixed
     config["dcase2026"] = deep_merge(config.get("dcase2026", {}), {"score_aggregation": aggregation})
     config = deep_merge(config, overrides)
-    config["dcase2026"] = deep_merge(config["dcase2026"], {"test_domain": "source", "run_name": f"grid_{name}{suffix}"})
+    # the test protocol is source-only unless the experiment asks for both domains (the target protocol of the DCASE)
+    both = overrides.get("dcase2026", {}).get("test_domain")
+    config["dcase2026"] = deep_merge(config["dcase2026"], {"test_domain": both or "source", "run_name": f"grid_{name}{suffix}"})
     if extra_aggregations:
         config["dcase2026"]["extra_aggregations"] = [a for a in extra_aggregations if a != config["dcase2026"]["score_aggregation"]]
     if name != "train_all":

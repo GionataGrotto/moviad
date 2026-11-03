@@ -68,7 +68,8 @@ def discover_machine_types(root: str | Path) -> list[str]:
 
 #: "diff" near - far; "ls" / "ls_half" subtract the far microphone after a per-clip least-squares filter; "ls_win" estimates
 #: the filter on blocks of ~2 s; "ls_global" uses one filter per machine, estimated on its training clips
-CHANNEL_MODES = ("diff", "ls", "ls_half", "ls_win", "ls_global")
+#: "stereo" yields both channels as ``[2, T]`` (near, far) for the self-supervised adaptation of the encoder
+CHANNEL_MODES = ("diff", "ls", "ls_half", "ls_win", "ls_global", "stereo")
 LS_WINDOW_FRAMES = 125  # ~2 s at hop 256
 _GLOBAL_TRANSFER: dict = {}
 
@@ -229,6 +230,8 @@ class DCASE2026Task2Dataset(Dataset):
             near, far = waveform[0], waveform[1]
             if self.channel == "diff":
                 waveform = near - far
+            elif self.channel == "stereo":
+                waveform = torch.stack([near, far])
             elif self.channel == "ls_win":
                 waveform = ls_denoise(near, far, segment_frames=LS_WINDOW_FRAMES)
             elif self.channel == "ls_global":

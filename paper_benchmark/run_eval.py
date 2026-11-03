@@ -30,6 +30,7 @@ import numpy as np  # noqa: E402
 from scipy.stats import hmean  # noqa: E402
 
 from fuse_scores import fuse, read_machine_scores  # noqa: E402
+from run_dcase_grid import EXPERIMENTS  # noqa: E402
 from score_eval import GT_ROOT, eval_machines, evaluate, mean_metric  # noqa: E402
 
 SUFFIX = "_eval"
@@ -207,9 +208,18 @@ def main() -> None:
     parser.add_argument("--retries", type=int, default=1)
     parser.add_argument("--retry-wait", type=float, default=30.0)
     parser.add_argument("--skip-ls-check", action="store_true", help="do not run the configurations without LS")
+    parser.add_argument("--extra", nargs="+", default=[], metavar="EXPERIMENT:METHOD",
+                        help="more grid experiments to run on the evaluation set and add to the report (e.g. tgt_pc_quota25:patchcore)")
     parser.add_argument("--report-only", action="store_true", help="rebuild the report from the saved scores, run nothing")
     args = parser.parse_args()
 
+    for item in args.extra:  # chosen on the dev machines beforehand, run here once
+        experiment, _, method = item.partition(":")
+        if experiment not in EXPERIMENTS or not method:
+            parser.error(f"--extra expects EXPERIMENT:METHOD with an experiment of run_dcase_grid.py, got {item!r}")
+        if (experiment, method) not in DEV_AUC:
+            DEV_AUC[(experiment, method)] = None
+            PAIRS.append((experiment, method))
     machines = eval_machines()
     failed = []
     if not args.report_only:

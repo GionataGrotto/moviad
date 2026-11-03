@@ -26,6 +26,7 @@ from moviad.models.audio.components.feature_ops import (
 )
 from moviad.models.audio.patchcore.anomaly_map import AnomalyMapGenerator
 from moviad.models.audio.patchcore.coreset import StreamingCoreset
+from moviad.models.audio.patchcore.target_domain import fit_domain_transfer, reduce_to
 from moviad.models.training_args import TrainingArgs
 from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 from moviad.utilities.custom_feature_extractor_trimmed import CustomFeatureExtractor
@@ -51,6 +52,10 @@ class PatchCore(AudioVADModel):
         score_standardization: str = "none",
         holdout_fraction: float = 0.1,
         patch_reweighting: bool = False,
+        target_bank_fraction: float = 0.0,
+        pseudo_target_fraction: float = 0.0,
+        domain_transfer: str = "meanstd",
+        transfer_shrinkage: float = 0.5,
     ) -> None:
         """
         Args:
@@ -71,6 +76,10 @@ class PatchCore(AudioVADModel):
             score_standardization: ``"band"`` standardises the patch scores of every frequency band
                 with the mean / std of held-out normal clips (``holdout_fraction`` of the training
                 batches, excluded from the memory bank); ``"none"`` leaves the scores untouched.
+            target_bank_fraction: fraction of the bank reserved for the patches of ``target_dataloader`` (all of them when they
+                fit the quota, else a k-center reduction); the source clips fill the rest.
+            pseudo_target_fraction: fraction of the bank filled with source patches mapped to the mean / covariance of the target
+                patches (``domain_transfer``: ``"meanstd"`` or ``"coral"``, ``transfer_shrinkage`` for the covariance).
             patch_reweighting: apply the PatchCore re-weighting (paper, section 3.3) to every patch score, so that the
                 anomaly map, and any score built from it, is re-weighted and not only the single score of the worst patch.
         """
@@ -94,6 +103,10 @@ class PatchCore(AudioVADModel):
         self.score_standardization = score_standardization
         self.holdout_fraction = holdout_fraction
         self.patch_reweighting = patch_reweighting
+        if min(target_bank_fraction, pseudo_target_fraction) < 0 or target_bank_fraction + pseudo_target_fraction >= 1:
+            raise ValueError("target_bank_fraction and pseudo_target_fraction must be >= 0 and sum to less than 1")
+        self.target_bank_fraction, self.pseudo_target_fraction = target_bank_fraction, pseudo_target_fraction
+        self.domain_transfer, self.transfer_shrinkage = domain_transfer, transfer_shrinkage
         self.register_buffer("memory_bank", Tensor())
         self.register_buffer("feature_mean", Tensor())
         self.register_buffer("feature_std", Tensor())
@@ -111,6 +124,7 @@ class PatchCore(AudioVADModel):
         pool_factor: int = 4,
         projection_dim: int = 128,
         seed: int = 0,
+        target_dataloader=None,
     ) -> None:
         """Build the memory bank from ``train_dataloader`` with bounded memory.
 
@@ -122,7 +136,10 @@ class PatchCore(AudioVADModel):
             force_cpu: run the greedy selection on CPU (useful when the GPU is full).
             pool_factor: size of the intermediate pool, in multiples of the bank.
             projection_dim: random-projection size used only for greedy distances.
+            target_dataloader: the target-domain clips, kept apart from ``train_dataloader`` (the source clips); needed when
+                ``target_bank_fraction`` or ``pseudo_target_fraction`` is set.
         """
+        target_dataloader = target_dataloader if target_dataloader is not None else getattr(self, "target_dataloader", None)
         selection_device = (
             torch.device("cpu") if force_cpu or self.device.type == "cpu" else self.device
         )
@@ -139,8 +156,15 @@ class PatchCore(AudioVADModel):
         # a bank needs data: the held-out batches do not contribute to it
         bank_batches = num_batches if not (num_batches and period) else max(1, num_batches - num_batches // period)
 
+        use_target = self.target_bank_fraction > 0 or self.pseudo_target_fraction > 0
+        if use_target and target_dataloader is None:
+            raise ValueError("target_bank_fraction / pseudo_target_fraction need the target clips: pass target_dataloader")
+        target_quota = round(self.target_bank_fraction * self.memory_bank_size)
+        pseudo_quota = round(self.pseudo_target_fraction * self.memory_bank_size)
+        source_size = self.memory_bank_size - target_quota - pseudo_quota  # the source patches fill what is left
+
         coresets: list[StreamingCoreset] | None = None  # one per band, created on the first batch
-        global_coreset = None if self.band_banks else StreamingCoreset(self.memory_bank_size, projection_dim, seed)
+        global_coreset = None if self.band_banks else StreamingCoreset(source_size, projection_dim, seed)
         held_out: list[Tensor] = []
 
         for index, batch in enumerate(tqdm(train_dataloader, desc="PatchCore embedding extraction")):
@@ -151,7 +175,7 @@ class PatchCore(AudioVADModel):
             batch_size, channels, height, width = embedding_map.shape
             if self.band_banks:
                 if coresets is None:
-                    band_size = self.memory_bank_size // width
+                    band_size = source_size // width
                     if band_size < 1:
                         raise ValueError(f"memory_bank_size {self.memory_bank_size} is too small for {width} bands")
                     coresets = [StreamingCoreset(band_size, projection_dim, seed + band) for band in range(width)]
@@ -161,23 +185,59 @@ class PatchCore(AudioVADModel):
                     coreset.add(band_embedding.to(selection_device), keep)
             else:
                 embedding = self.reshape_embedding(embedding_map).to(selection_device)
-                keep = math.ceil(pool_factor * self.memory_bank_size / bank_batches) if bank_batches else math.ceil(0.1 * embedding.shape[0])
+                keep = math.ceil(pool_factor * source_size / bank_batches) if bank_batches else math.ceil(0.1 * embedding.shape[0])
                 global_coreset.add(embedding, keep)
 
         if self.band_banks:
             if coresets is None:
                 raise RuntimeError("Cannot build a memory bank from an empty dataset")
             banks = [coreset.result(selection_device) for coreset in coresets]
+            if use_target:
+                extra = self._target_banks(target_dataloader, banks, target_quota // len(banks), pseudo_quota // len(banks), selection_device, seed)
+                banks = [torch.cat([bank, *parts]) for bank, parts in zip(banks, extra)]
             self.band_bank_sizes = torch.tensor([bank.shape[0] for bank in banks], dtype=torch.long)
             self.memory_bank = torch.cat(banks).to(self.device)
         else:
             self.band_bank_sizes = torch.zeros(0, dtype=torch.long)
-            self.memory_bank = global_coreset.result(selection_device).to(self.device)
+            bank = global_coreset.result(selection_device)
+            if use_target:
+                extra = self._target_banks(target_dataloader, [bank], target_quota, pseudo_quota, selection_device, seed)
+                bank = torch.cat([bank, *extra[0]])
+            self.memory_bank = bank.to(self.device)
 
         if standardize_scores:
             self._fit_score_statistics(held_out)
         else:
             self.score_mean, self.score_std = Tensor(), Tensor()
+
+    @torch.no_grad()
+    def _target_banks(self, target_dataloader, source_banks, target_quota, pseudo_quota, device, seed):
+        """For every bank (one, or one per band): the reserved target patches and the pseudo-target patches.
+
+        The pseudo-target patches are the source bank mapped to the mean / covariance of the target patches.
+        """
+        per_band: list[list[Tensor]] | None = None
+        for batch in target_dataloader:
+            embedding_map = self.embed(self.batch_input(batch)).detach()
+            _, channels, _, width = embedding_map.shape
+            if self.band_banks:
+                patches = [embedding_map[:, :, :, band].permute(0, 2, 1).reshape(-1, channels) for band in range(width)]
+            else:
+                patches = [self.reshape_embedding(embedding_map)]
+            per_band = per_band or [[] for _ in patches]
+            for store, chunk in zip(per_band, patches):
+                store.append(chunk.cpu())
+        if per_band is None:
+            raise RuntimeError("target_dataloader is empty")
+        result = []
+        for index, (source_bank, chunks) in enumerate(zip(source_banks, per_band)):
+            target = torch.cat(chunks).to(device)
+            parts = [reduce_to(target, target_quota, seed + index)]
+            if pseudo_quota:
+                transfer = fit_domain_transfer(source_bank.to(device), target, self.domain_transfer, self.transfer_shrinkage)
+                parts.append(reduce_to(transfer(source_bank.to(device)), pseudo_quota, seed + index))
+            result.append([part.cpu() for part in parts])
+        return result
 
     @torch.no_grad()
     def _fit_score_statistics(self, held_out: list[Tensor]) -> None:

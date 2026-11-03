@@ -381,6 +381,26 @@ in anticipo, migliore sul dev, migliore guardando l'evaluation (oracolo). Contie
 uv run python paper_benchmark/run_eval.py --base-config paper_benchmark/config.eval.json
 ```
 
+**Dominio target, SSL su BEATs e Dinomaly su BEATs (round 7).** Tutte le prove sono nei preset `target_domain`,
+`ssl_patchcore` e `dinomaly_beats` e nel piano di `run_all.py` (`--only tgt_pc ssl_pc dino_beats` per eseguire solo quelle).
+Le prove `tgt_*` si testano su *entrambi* i domini con i 10 clip target nel training: si leggono con
+`dev_domains.py nome=<run>/teams/moviad/patchcore ...` (AUC source, AUC target, pAUC e punteggio ufficiale ricostruito).
+
+- PatchCore: `patchcore_target_fraction` riserva una quota della bank alle patch target; `patchcore_pseudo_fraction` riempie
+  una quota con patch source portate alle statistiche del target (`patchcore_domain_transfer` = `meanstd` o `coral`);
+  `target_augment_copies` aggiunge N augmentation (guadagno, EQ, spostamento, velocita', rumore; `target_augment_mix` le mescola
+  appena con clip source) di ogni clip target. La duplicazione dei clip non serve: il k-center greedy non sceglie mai due
+  volte lo stesso punto. Il target va mappato verso il source *non* viceversa: il dominio di un clip di test e' ignoto.
+- Metodi a gradiente (Dinomaly, CFA, STFPM): `train_target_weight` (un numero o `"balance"`) campiona i clip target piu' spesso.
+- SSL su BEATs: `beats_ssl` = `{"objective": "reg" | "mask" | "contrastive", "signal": "near" | "ls", "epochs": 5, ...}` adatta
+  con LoRA un BEATs per ogni macchina prima di costruire il detector. `reg`: dal far prevede le feature (di un BEATs congelato) del
+  segnale pulito; `mask`: ricostruisce le patch nascoste del filterbank; `contrastive`: avvicina far e segnale pulito (InfoNCE).
+  Un adattamento condiviso tra le macchine si fa con `train_beats_ssl.py --out adapters/x.pt` e `"beats_adapter": "adapters/x.pt"`
+  (`run_all.py` crea da solo i file `adapters/ssl_<obiettivo>_ls.pt` che le prove `*_shared` richiedono).
+- Dinomaly su BEATs: con `"backbone": "BEATs"` e `layers` = 8 blocchi consecutivi (3..10) usa BEATs come encoder congelato (token
+  tempo x 8 bande); `dinomaly_distance` = `cosine` o `l2`. Le aggregazioni (`top10pct`, `mean`...) si confrontano con `--aggregation-sweep`.
+- Sull'evaluation, `run_eval.py --extra tgt_pc_quota25:patchcore ...` esegue una prova scelta sul dev e la aggiunge al report.
+
 `diagnose_signal_features.py --dataset-path <DCASE>` calcola per macchina l'AUC di semplici statistiche
 del segnale (RMS, centroide spettrale, piattezza, quota di alte frequenze): serve a capire se un'inversione
 sistematica (AUC sotto 0,5) dipende dall'energia del clip.

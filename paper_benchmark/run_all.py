@@ -26,7 +26,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
-from run_dcase_grid import write_summary  # noqa: E402
+from run_dcase_grid import EXPERIMENTS, PRESETS, write_summary  # noqa: E402
 from fuse_scores import fuse, machine_auc, mean_auc, read_machine_scores  # noqa: E402
 
 #: (experiment, method, run suffix, seed); ordered from the most useful to the most speculative
@@ -109,6 +109,10 @@ PLAN: list[tuple[str, str, str, int | None]] = [
     ("beats_b12_ls", "cfa", "_seed2", 2),
     ("beats_b12_ls", "cfa", "_seed3", 3),
     ("beats_b12_ls", "cfa", "_seed4", 4),
+    # round 7: the target domain, a self-supervised BEATs, Dinomaly on BEATs (all tested on both domains where it matters)
+    *[(name, "patchcore", "", None) for name in PRESETS["target_domain"]],
+    *[(name, "patchcore", "", None) for name in PRESETS["ssl_patchcore"]],
+    *[(name, "dinomaly", "", None) for name in PRESETS["dinomaly_beats"]],
     # STFPM: optimiser and BEATs student
     ("baseline", "stfpm", "", None),
     ("stfpm_sgd_lr0p1", "stfpm", "", None),
@@ -122,6 +126,29 @@ PLAN: list[tuple[str, str, str, int | None]] = [
 
 #: the time-percentage pooling, on top of the --aggregation-sweep ones
 EXTRA_AGGREGATIONS = ["frames10pct", "frames25pct", "frames50pct"]
+#: Later groups are more likely to fail (new code, a model never run on real data, long runs, a method that failed before), so a
+#: crash costs the least: the plan is sorted by group (stable inside a group) right after it is defined.
+_RISK_GROUPS = [
+    {"tgt_pc_source_only", "tgt_pc_plain"},  # PatchCore, both domains: configuration only
+    {"tgt_pc_quota10", "tgt_pc_quota25", "tgt_pc_quota50", "tgt_pc_aug10", "tgt_pc_aug10_quota25", "tgt_pc_aug10mix_quota25"},  # new PatchCore code
+    {"tgt_pc_pseudo_meanstd", "tgt_pc_pseudo_coral"},  # domain transfer: eigendecomposition of a 2304x2304 matrix for coral
+    {"ssl_pc_reg_near", "ssl_pc_reg_ls", "ssl_pc_reg_near_on_ls", "ssl_pc_mask_near", "ssl_pc_mask_ls", "ssl_pc_contrastive_near", "ssl_pc_contrastive_ls"},
+    {"dino_beats_ls", "dino_beats_ls_l2", "dino_beats_ls_both", "dino_beats_ls_tw", "dino_beats_ls_tw_l2"},  # a new model, trained for 30 epochs
+    {"ssl_pc_reg_ls_shared", "ssl_pc_mask_ls_shared", "ssl_pc_contrastive_ls_shared"},  # also need the adapter to be trained first
+    {"dino_beats_ls_ssl", "dino_beats_ls_ssl_tw"},  # two risky things together
+    {"stfpm_beats_late_adamw_1e5", "stfpm_beats_b12_adamw_1e5"},  # failed on 3 of 7 machines before
+]
+
+
+def _risk(pair) -> int:
+    for index, group in enumerate(_RISK_GROUPS):
+        if pair[0] in group:
+            return index
+    return -1  # everything else was already run on real data
+
+
+PLAN.sort(key=_risk)  # list.sort is stable: the order inside a group is the one written above
+
 Run = tuple[str, str, str]  # experiment, method, suffix
 #: name -> runs whose scores are averaged (rank per machine, equal weights)
 #: an entry may itself be a list of runs (e.g. seeds): those are averaged first and count as one component
@@ -160,6 +187,11 @@ FUSIONS: dict[str, list] = {
 
 SUMMARY = ROOT / "results" / "paper_benchmark" / "grid_summary.md"
 SCRATCH_SUMMARY = ROOT / "results" / "paper_benchmark" / "grid_summary_last_pair.md"
+#: shared BEATs adapters the plan needs: path (relative to the repo) -> train_beats_ssl.py arguments; made when missing
+ADAPTERS = {
+    f"adapters/ssl_{objective}_ls.pt": ["--objective", objective, "--signal", "ls", "--train-domains", "all"]
+    for objective in ("reg", "mask", "contrastive")
+}
 FAILURES = ROOT / "results" / "paper_benchmark" / "all_failures.json"
 FUSION_REPORT = ROOT / "results" / "paper_benchmark" / "fusion_dcase2026.md"
 
@@ -188,8 +220,23 @@ def command_for(pair, args) -> list[str]:
     return command
 
 
+def ensure_adapter(pair, args, runner=subprocess.run, root: Path = ROOT) -> bool:
+    """Train the shared BEATs adapter an experiment refers to (``beats_adapter``) when its file does not exist yet."""
+    path = EXPERIMENTS[pair[0]][1].get("beats_adapter")
+    if not path or (root / path).exists():
+        return True
+    if path not in ADAPTERS:
+        print(f"!! {pair[0]} needs the adapter {path}, which this plan does not know how to make", file=sys.stderr)
+        return False
+    command = [sys.executable, str(HERE / "train_beats_ssl.py"), "--config", str(args.base_config), "--out", str(root / path), *ADAPTERS[path]]
+    print(f"\n##### making the adapter {path}", flush=True)
+    return runner(command, cwd=root).returncode == 0
+
+
 def run_pair(pair, args, runner=subprocess.run) -> bool:
     """Run one pair, retrying on failure; True when a run exited cleanly."""
+    if not ensure_adapter(pair, args, runner):
+        return False
     for attempt in range(args.retries + 1):
         print(f"\n##### {pair_label(pair)} (attempt {attempt + 1}/{args.retries + 1})", flush=True)
         if runner(command_for(pair, args), cwd=ROOT).returncode == 0:

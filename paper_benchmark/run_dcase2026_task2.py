@@ -23,6 +23,8 @@ from torch.utils.data import DataLoader
 
 try:
     from .benchmark_common import (
+        attach_beats_ssl,
+        build_fit_loaders,
         check_audio_checkpoint,
         method_sample_rate,
         prepare_audio_run,
@@ -40,6 +42,8 @@ try:
     )
 except ImportError:  # supports ``python paper_benchmark/run_*.py``
     from benchmark_common import (
+        attach_beats_ssl,
+        build_fit_loaders,
         check_audio_checkpoint,
         method_sample_rate,
         prepare_audio_run,
@@ -323,7 +327,7 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     set_seed(seed)
     dcase = config.get("dcase2026", {})
     channel = dcase.get("channel", 0)
-    channel = channel if channel in ("diff", "ls", "ls_half", "ls_win", "ls_global") else int(channel)
+    channel = channel if channel in ("diff", "ls", "ls_half", "ls_win", "ls_global", "stereo") else int(channel)
     train_domain = dcase.get("train_domains", "all")
     test_domain = dcase.get("test_domain", "all")
     sample_rate = method_sample_rate(method, config)
@@ -333,12 +337,16 @@ def run_one(method, config, dataset_path, machine, seed, args, evaluator_root):
     test_loader = DataLoader(test_ds, batch_size=int(config["batch_size"]), shuffle=False, num_workers=int(config["num_workers"]))
     input_size = spectrogram_size(config, train_ds[0])
     model = make_model(method, config, device, input_size, class_name=machine)
+    attach_beats_ssl(method, model, config, dataset_path, machine, seed)  # no-op unless config['beats_ssl'] is set
+    fit_loader, target_loader = build_fit_loaders(config, method, dataset_path, machine, channel, sample_rate, seed, train_ds, train_loader)
+    if target_loader is not None:
+        model.target_dataloader = target_loader  # PatchCore keeps these patches apart (reserved quota, pseudo-target bank)
     if args.epochs is not None:
         config["epochs"] = args.epochs
     fit_model(
         method,
         model,
-        train_loader,
+        fit_loader,
         test_loader,
         config,
         device,

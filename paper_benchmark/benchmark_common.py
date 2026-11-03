@@ -72,6 +72,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "finetune_lr": 1e-4,
     "finetune_margin": 0.3,
     "finetune_pseudo_classes": 0,
+    "patchcore_target_fraction": 0.0,
+    "patchcore_pseudo_fraction": 0.0,
+    "patchcore_domain_transfer": "meanstd",
+    "patchcore_transfer_shrinkage": 0.5,
+    "target_augment_copies": 0,
+    "target_augment_mix": False,
+    "train_target_weight": None,
+    "beats_adapter": None,
+    "beats_ssl": None,
     "handcrafted_bands": 32,
     "handcrafted_shrinkage": 0.1,
     "handcrafted_stats": ["mean", "std", "diffstd"],
@@ -324,7 +333,7 @@ def make_feature_extractor(config: dict[str, Any], device: torch.device, frozen:
         checkpoint, code_dir = beats_settings(config)
         if not checkpoint:
             raise ValueError("backbone 'BEATs' needs beats_checkpoint (and beats_code_dir) in the config")
-        return BEATsFeatureExtractor(
+        extractor = BEATsFeatureExtractor(
             expand_path(checkpoint),
             code_dir=code_dir,
             layers=config["layers"],
@@ -332,6 +341,12 @@ def make_feature_extractor(config: dict[str, Any], device: torch.device, frozen:
             frozen=frozen,
             pretrained=config.get("pretrained", True) if pretrained is None else pretrained,
         )
+        if config.get("beats_adapter"):
+            from moviad.models.audio.beats_ssl import load_adapter
+
+            load_adapter(extractor, expand_path(config["beats_adapter"]))
+            print(f"BEATs adapter loaded: {config['beats_adapter']}", flush=True)
+        return extractor
     from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 
     return AudioFeatureExtractor(
@@ -385,6 +400,74 @@ def spectrogram_size(config: dict[str, Any], waveform: torch.Tensor) -> tuple[in
     return tuple(int(dim) for dim in spectrogram.shape[-2:])
 
 
+def attach_beats_ssl(method: str, model, config: dict[str, Any], dataset_path, machine: str, seed: int) -> None:
+    """Adapt the BEATs of ``model`` to this machine with ``config["beats_ssl"]`` (objective, signal, epochs...): off by default.
+
+    The adapters are trained on the normal training clips of the machine, both microphones, before the detector is fitted.
+    Use ``train_beats_ssl.py`` and ``beats_adapter`` instead to share one adaptation between the machines.
+    """
+    spec = config.get("beats_ssl")
+    if not spec:
+        return
+    from moviad.datasets.dcase2026_task2 import DCASE2026Task2Dataset
+    from moviad.models.audio.beats_ssl import adapt_beats
+    from moviad.utilities.audio.beats_feature_extractor import BEATsFeatureExtractor
+
+    extractor = next((getattr(model, name) for name in ("feature_extractor", "encoder") if isinstance(getattr(model, name, None), BEATsFeatureExtractor)), None)
+    if extractor is None:
+        raise ValueError(f"beats_ssl needs a BEATs backbone (backbone: 'BEATs'); method {method!r} has none")
+    domains = spec.get("train_domains", config.get("dcase2026", {}).get("train_domains", "source"))
+    dataset = DCASE2026Task2Dataset(dataset_path, machine, "train", train_domains=domains, channel="stereo", target_sample_rate=BEATsFeatureExtractor.sample_rate)
+    options = {k: spec[k] for k in ("objective", "signal", "epochs", "lr", "rank", "alpha", "batch_size", "mask_ratio", "temperature") if k in spec}
+    adapt_beats(extractor, dataset, seed=seed, **options)
+
+
+def build_fit_loaders(config: dict[str, Any], method: str, dataset_path, machine: str, channel, sample_rate: int, seed: int, train_ds, train_loader):
+    """``(loader the model is fitted on, loader of the target clips kept apart or None)`` for the DCASE runner.
+
+    Without any of the options below this is ``(train_loader, None)``. ``patchcore_target_fraction`` /
+    ``patchcore_pseudo_fraction`` (PatchCore only) fit on the source clips and hand the target ones to the model, which
+    keeps their patches in a reserved quota. ``target_augment_copies`` adds that many random augmentations of every
+    target clip (``target_augment_mix``: lightly mixed with source clips), and ``train_target_weight`` (a number, or
+    ``"balance"``) samples the target clips that much more often: for the gradient-trained methods and plain fits.
+    """
+    from torch.utils.data import ConcatDataset, DataLoader, WeightedRandomSampler
+
+    from moviad.datasets.audio_augment import AugmentedDataset, domain_sample_weights
+    from moviad.datasets.dcase2026_task2 import DCASE2026Task2Dataset
+
+    copies = int(config.get("target_augment_copies", 0))
+    weight = config.get("train_target_weight")
+    quotas = method == "patchcore" and (
+        float(config.get("patchcore_target_fraction", 0.0)) > 0 or float(config.get("patchcore_pseudo_fraction", 0.0)) > 0
+    )
+    if not (quotas or copies or weight is not None):
+        return train_loader, None
+    batch, workers = int(config["batch_size"]), int(config["num_workers"])
+
+    def dataset(domains: str):
+        return DCASE2026Task2Dataset(dataset_path, machine, "train", train_domains=domains, channel=channel, target_sample_rate=sample_rate)
+
+    source_ds, target_ds = dataset("source"), dataset("target")
+    parts = [target_ds]
+    if copies:
+        parts.append(AugmentedDataset(target_ds, copies, seed, sample_rate, mix_with=source_ds if config.get("target_augment_mix") else None))
+    target_set = ConcatDataset(parts)
+    if quotas:
+        return (
+            DataLoader(source_ds, batch_size=batch, shuffle=True, num_workers=workers),
+            DataLoader(target_set, batch_size=batch, shuffle=False, num_workers=workers),
+        )
+    combined = ConcatDataset([source_ds, target_set])
+    sampler = None
+    if weight is not None:
+        domains = ["source"] * len(source_ds) + ["target"] * len(target_set)
+        sampler = WeightedRandomSampler(
+            domain_sample_weights(domains, weight), num_samples=len(combined), replacement=True, generator=torch.Generator().manual_seed(seed)
+        )
+    return DataLoader(combined, batch_size=batch, shuffle=sampler is None, sampler=sampler, num_workers=workers), None
+
+
 def make_model(
     method: str,
     config: dict[str, Any],
@@ -409,6 +492,10 @@ def make_model(
             score_standardization=config.get("patchcore_score_std", "none"),
             holdout_fraction=float(config.get("score_std_holdout", 0.1)),
             patch_reweighting=bool(config.get("patchcore_reweighting", False)),
+            target_bank_fraction=float(config.get("patchcore_target_fraction", 0.0)),
+            pseudo_target_fraction=float(config.get("patchcore_pseudo_fraction", 0.0)),
+            domain_transfer=config.get("patchcore_domain_transfer", "meanstd"),
+            transfer_shrinkage=float(config.get("patchcore_transfer_shrinkage", 0.5)),
         ).to(device)
 
     if method == "knn_ft":
@@ -506,6 +593,13 @@ def make_model(
             config, device, frozen=False, pretrained=bool(config.get("stfpm_student_pretrained", True))
         )
         return STFPM(teacher, student).to(device)
+
+    if method == "dinomaly" and config.get("backbone") == "BEATs":
+        from moviad.models.audio.dinomaly_beats import BEATsDinomaly
+
+        return BEATsDinomaly(
+            make_feature_extractor(config, device, frozen=True), device, distance=config.get("dinomaly_distance", "cosine"),
+        ).to(device)
 
     if method == "dinomaly":
         from moviad.models.audio.dinomaly import AudioDinomaly

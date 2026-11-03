@@ -72,3 +72,34 @@ def test_write_fusions_averages_a_group_of_seeds_as_one_component(tmp_path, monk
     grouped = next(line for line in lines if line.startswith("| grouped"))
     assert "| 2 |" in grouped and "n/d" not in grouped
     assert "n/d (mancano: nope:m)" in next(line for line in lines if line.startswith("| missing"))
+
+
+def test_shared_adapters_are_made_once_and_only_when_an_experiment_needs_them(tmp_path):
+    calls = []
+
+    def runner(command, cwd=None):
+        calls.append(command)
+        return types.SimpleNamespace(returncode=0)
+
+    shared = ("ssl_pc_reg_ls_shared", "patchcore", "", None)
+    assert run_all.ensure_adapter(shared, args(), runner, root=tmp_path) is True
+    assert len(calls) == 1 and "train_beats_ssl.py" in calls[0][1] and calls[0][calls[0].index("--objective") + 1] == "reg"
+    (tmp_path / "adapters").mkdir()
+    (tmp_path / "adapters" / "ssl_reg_ls.pt").write_bytes(b"")
+    assert run_all.ensure_adapter(shared, args(), runner, root=tmp_path) is True and len(calls) == 1  # the file exists: nothing to make
+    assert run_all.ensure_adapter(("tgt_pc_quota25", "patchcore", "", None), args(), runner, root=tmp_path) is True and len(calls) == 1
+
+
+def test_round_seven_is_in_the_plan():
+    labels = {run_all.pair_label(p) for p in run_all.PLAN}
+    assert "tgt_pc_quota25:patchcore" in labels and "ssl_pc_mask_ls:patchcore" in labels and "dino_beats_ls_tw:dinomaly" in labels
+
+
+def test_the_plan_runs_the_riskiest_pairs_last():
+    labels = [run_all.pair_label(p) for p in run_all.PLAN]
+    position = {label: i for i, label in enumerate(labels)}
+    assert position["tgt_pc_plain:patchcore"] < position["tgt_pc_quota25:patchcore"] < position["tgt_pc_pseudo_coral:patchcore"]
+    assert position["tgt_pc_pseudo_coral:patchcore"] < position["ssl_pc_reg_ls:patchcore"] < position["dino_beats_ls:dinomaly"]
+    assert position["dino_beats_ls:dinomaly"] < position["ssl_pc_reg_ls_shared:patchcore"] < position["dino_beats_ls_ssl:dinomaly"]
+    assert position["dino_beats_ls_ssl_tw:dinomaly"] < position["stfpm_beats_b12_adamw_1e5:stfpm"] == len(labels) - 1
+    assert position["baseline:knn"] < position["tgt_pc_source_only:patchcore"]  # what already ran stays in front
