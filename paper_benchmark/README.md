@@ -399,6 +399,11 @@ Le prove `tgt_*` si testano su *entrambi* i domini con i 10 clip target nel trai
   (`run_all.py` crea da solo i file `adapters/ssl_<obiettivo>_ls.pt` che le prove `*_shared` richiedono).
 - Dinomaly su BEATs: con `"backbone": "BEATs"` e `layers` = 8 blocchi consecutivi (3..10) usa BEATs come encoder congelato (token
   tempo x 8 bande); `dinomaly_distance` = `cosine` o `l2`. Le aggregazioni (`top10pct`, `mean`...) si confrontano con `--aggregation-sweep`.
+- Memoria e tempi (stimati, non misurati): l'adattamento SSL tiene le attivazioni dei 12 blocchi, quindi usa a ogni passo una
+  finestra casuale di `crop_seconds` (4 s) e batch 4, 3 epoche; Dinomaly su BEATs ricalcola i blocchi del decoder nel passo
+  all'indietro (`checkpoint_decoder`) e per le prove `dino_beats_*` usa 12 epoche (BEATs 768 canali, ~500 token per clip).
+  Una quota target che i clip target non riempiono (10 clip danno ~620 patch per banda) torna alle patch source.
+  Le augmentation cambiano la velocita' con un rapporto k/100: una frequenza casuale costerebbe ~1 GB e 10 s per chiamata.
 - Sull'evaluation, `run_eval.py --extra tgt_pc_quota25:patchcore ...` esegue una prova scelta sul dev e la aggiunge al report.
 
 `diagnose_signal_features.py --dataset-path <DCASE>` calcola per macchina l'AUC di semplici statistiche

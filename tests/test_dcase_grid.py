@@ -281,6 +281,6 @@ def test_target_protocol_experiments_test_on_both_domains_and_train_with_the_tar
     assert grid.build_config(base, "ssl_pc_reg_ls_shared", 5)["beats_adapter"] == "adapters/ssl_reg_ls.pt"
     dino = grid.build_config(base, "dino_beats_ls_tw_l2", 5)
     assert dino["backbone"] == "BEATs" and dino["dinomaly_distance"] == "l2" and dino["train_target_weight"] == "balance"
-    assert len(dino["layers"]) == 8
+    assert len(dino["layers"]) == 8 and dino["epochs"] == 12
     for name in grid.PRESETS["dinomaly_beats"]:
         assert grid.EXPERIMENTS[name][2] == {"dinomaly"}

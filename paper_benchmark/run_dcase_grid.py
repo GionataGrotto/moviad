@@ -224,7 +224,7 @@ _PCB_LS = {**BEATS_LATE, "patchcore_band_banks": True, "patchcore_score_std": "b
 _BOTH = {"test_domain": "all", "train_domains": "all"}
 _LS = {"channel": "ls"}
 _DINO_LAYERS = [3, 4, 5, 6, 7, 8, 9, 10]  # Dinomaly takes 8 consecutive blocks of a 12-block ViT
-_SSL = {"epochs": 5, "lr": 1e-4, "rank": 8, "batch_size": 8}
+_SSL = {"epochs": 3, "lr": 1e-4, "rank": 8, "batch_size": 4, "crop_seconds": 4.0}
 
 
 def _define(name, description, overrides, methods):
@@ -272,7 +272,9 @@ for _objective in ("reg", "mask", "contrastive"):
             _patchcore(beats_adapter=f"adapters/ssl_{_objective}_ls.pt", dcase=_LS), {"patchcore"})
 
 # Dinomaly on BEATs (+ LS)
-_dino = {"backbone": "BEATs", "layers": _DINO_LAYERS}
+# 12 epochs, not 30: with BEATs as the encoder (768 channels, ~500 tokens per clip) an epoch is ~20x heavier than with the small
+# DeiT of the Cnn14 runs, and 12 epochs of ~30 steps are still ~400 updates
+_dino = {"backbone": "BEATs", "layers": _DINO_LAYERS, "epochs": 12}
 _define("dino_beats_ls", "Dinomaly on BEATs + LS (cosine)", {**_dino, "dcase2026": _LS}, {"dinomaly"})
 _define("dino_beats_ls_l2", "Dinomaly on BEATs + LS, L2 distance", {**_dino, "dinomaly_distance": "l2", "dcase2026": _LS}, {"dinomaly"})
 _define("dino_beats_ls_both", "Dinomaly on BEATs + LS, + 10 target clips, tested on both domains",

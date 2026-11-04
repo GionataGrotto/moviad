@@ -98,3 +98,31 @@ def test_domain_weights():
     assert domain_sample_weights(domains, 3.0) == [1.0] * 8 + [3.0] * 2
     weights = domain_sample_weights(domains, "balance")
     assert sum(weights[:8]) == pytest.approx(sum(weights[8:]))
+
+
+def test_speed_change_uses_a_small_integer_ratio(monkeypatch):
+    """A random sample rate (16000 -> 15521) makes torchaudio build a ~1 GB kernel per call: the ratio has to be k / 100."""
+    import torchaudio
+
+    calls = []
+    real = torchaudio.functional.resample
+
+    def spy(wave, orig, new, *args, **kwargs):
+        calls.append((orig, new))
+        return real(wave, orig, new, *args, **kwargs)
+
+    monkeypatch.setattr(torchaudio.functional, "resample", spy)
+    generator = torch.Generator().manual_seed(0)
+    for _ in range(40):
+        augment_waveform(torch.randn(16000), generator, probability=1.0)
+    assert calls and all(orig == 100 and 97 <= new <= 103 for orig, new in calls)
+
+
+@pytest.mark.parametrize("band_banks", [False, True])
+def test_a_quota_the_target_clips_cannot_fill_goes_back_to_the_source(band_banks):
+    """One target clip gives few patches: the bank keeps its size, the unused part of the quota holds source patches."""
+    model = make_model(band_banks=band_banks, target_bank_fraction=0.75)
+    model.fit(clips(40, 0.0, 0), target_dataloader=clips(1, 5.0, 1))
+    assert model.memory_bank.shape[0] == 64
+    target_patches = FRAMES * BANDS  # one clip
+    assert (model.memory_bank.mean(dim=1) > 2.5).sum().item() == target_patches  # all of them, and no more than exist

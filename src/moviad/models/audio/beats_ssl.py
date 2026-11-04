@@ -102,6 +102,22 @@ def clean_signal(near: torch.Tensor, far: torch.Tensor, signal: str) -> torch.Te
     return torch.stack([ls_denoise(n, f) for n, f in zip(near, far)])
 
 
+def crop_collate(crop_samples: int | None, generator: torch.Generator):
+    """Collate ``[2, T]`` clips of different lengths (machines last 6, 10 or 16 s) into one ``[B, 2, W]`` batch.
+
+    ``W`` is the length of the shortest clip, at most ``crop_samples``; every clip gives a random window of that length.
+    """
+
+    def collate(items: list[torch.Tensor]) -> torch.Tensor:
+        window = min(item.shape[-1] for item in items)
+        if crop_samples:
+            window = min(window, crop_samples)
+        starts = [int(torch.randint(0, item.shape[-1] - window + 1, (1,), generator=generator)) for item in items]
+        return torch.stack([item[..., start : start + window] for item, start in zip(items, starts)])
+
+    return collate
+
+
 def adapt_beats(
     extractor,
     dataset,
@@ -111,15 +127,19 @@ def adapt_beats(
     lr: float = 1e-4,
     rank: int = 8,
     alpha: float = 16.0,
-    batch_size: int = 8,
+    batch_size: int = 4,
     mask_ratio: float = 0.5,
     temperature: float = 0.1,
     seed: int = 0,
+    crop_seconds: float | None = 4.0,
+    sample_rate: int = 16000,
     log=print,
 ) -> list[float]:
     """Train LoRA adapters inside ``extractor.model`` (in place) and return the mean loss of every epoch.
 
     ``dataset`` yields ``[2, T]`` clips (near, far) at 16 kHz: ``DCASE2026Task2Dataset(..., channel="stereo")``.
+    Memory: training keeps the activations of the 12 blocks of every clip, so each step sees a random window of
+    ``crop_seconds`` (``None``: the whole clip) and the batch is small; the contrastive objective runs the network twice.
     """
     if objective not in OBJECTIVES:
         raise ValueError(f"objective must be one of {OBJECTIVES}, got {objective!r}")
@@ -133,7 +153,11 @@ def adapt_beats(
     model = extractor.model
     parameters = apply_lora(model, ("q_proj", "v_proj"), rank, alpha)
     optimizer = torch.optim.AdamW(parameters, lr=lr)
-    loader = DataLoader(dataset, batch_size=min(batch_size, len(dataset)), shuffle=True, generator=generator, drop_last=len(dataset) > batch_size)
+    crop_samples = int(crop_seconds * sample_rate) if crop_seconds else None
+    loader = DataLoader(
+        dataset, batch_size=min(batch_size, len(dataset)), shuffle=True, generator=generator, drop_last=len(dataset) > batch_size,
+        collate_fn=crop_collate(crop_samples, generator),
+    )
     patch = patch_size(model)
     model.eval()  # layerdrop and dropout would skip hooked blocks and add noise to the targets
     history = []

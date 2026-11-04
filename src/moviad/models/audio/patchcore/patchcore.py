@@ -159,9 +159,14 @@ class PatchCore(AudioVADModel):
         use_target = self.target_bank_fraction > 0 or self.pseudo_target_fraction > 0
         if use_target and target_dataloader is None:
             raise ValueError("target_bank_fraction / pseudo_target_fraction need the target clips: pass target_dataloader")
-        target_quota = round(self.target_bank_fraction * self.memory_bank_size)
-        pseudo_quota = round(self.pseudo_target_fraction * self.memory_bank_size)
-        source_size = self.memory_bank_size - target_quota - pseudo_quota  # the source patches fill what is left
+        # The target patches are collected first: a quota the target clips cannot fill (10 clips give ~600 patches per band)
+        # goes back to the source patches instead of leaving the bank smaller.
+        target_chunks = self._collect_target_patches(target_dataloader) if use_target else None
+        n_banks = len(target_chunks) if use_target else 1
+        target_per_bank = round(self.target_bank_fraction * self.memory_bank_size) // n_banks
+        pseudo_per_bank = round(self.pseudo_target_fraction * self.memory_bank_size) // n_banks
+        target_used = sum(min(target_per_bank, chunk.shape[0]) for chunk in target_chunks) if use_target else 0
+        source_size = self.memory_bank_size - target_used - pseudo_per_bank * n_banks  # the source patches fill what is left
 
         coresets: list[StreamingCoreset] | None = None  # one per band, created on the first batch
         global_coreset = None if self.band_banks else StreamingCoreset(source_size, projection_dim, seed)
@@ -193,7 +198,7 @@ class PatchCore(AudioVADModel):
                 raise RuntimeError("Cannot build a memory bank from an empty dataset")
             banks = [coreset.result(selection_device) for coreset in coresets]
             if use_target:
-                extra = self._target_banks(target_dataloader, banks, target_quota // len(banks), pseudo_quota // len(banks), selection_device, seed)
+                extra = self._target_banks(target_chunks, banks, target_per_bank, pseudo_per_bank, selection_device, seed)
                 banks = [torch.cat([bank, *parts]) for bank, parts in zip(banks, extra)]
             self.band_bank_sizes = torch.tensor([bank.shape[0] for bank in banks], dtype=torch.long)
             self.memory_bank = torch.cat(banks).to(self.device)
@@ -201,7 +206,7 @@ class PatchCore(AudioVADModel):
             self.band_bank_sizes = torch.zeros(0, dtype=torch.long)
             bank = global_coreset.result(selection_device)
             if use_target:
-                extra = self._target_banks(target_dataloader, [bank], target_quota, pseudo_quota, selection_device, seed)
+                extra = self._target_banks(target_chunks, [bank], target_per_bank, pseudo_per_bank, selection_device, seed)
                 bank = torch.cat([bank, *extra[0]])
             self.memory_bank = bank.to(self.device)
 
@@ -211,11 +216,8 @@ class PatchCore(AudioVADModel):
             self.score_mean, self.score_std = Tensor(), Tensor()
 
     @torch.no_grad()
-    def _target_banks(self, target_dataloader, source_banks, target_quota, pseudo_quota, device, seed):
-        """For every bank (one, or one per band): the reserved target patches and the pseudo-target patches.
-
-        The pseudo-target patches are the source bank mapped to the mean / covariance of the target patches.
-        """
+    def _collect_target_patches(self, target_dataloader) -> list[Tensor]:
+        """All the patches of the target clips, on the CPU: one ``(patches, channels)`` tensor per band (per bank), or a single one."""
         per_band: list[list[Tensor]] | None = None
         for batch in target_dataloader:
             embedding_map = self.embed(self.batch_input(batch)).detach()
@@ -229,9 +231,17 @@ class PatchCore(AudioVADModel):
                 store.append(chunk.cpu())
         if per_band is None:
             raise RuntimeError("target_dataloader is empty")
+        return [torch.cat(chunks) for chunks in per_band]
+
+    @torch.no_grad()
+    def _target_banks(self, target_chunks, source_banks, target_quota, pseudo_quota, device, seed):
+        """For every bank (one, or one per band): the reserved target patches and the pseudo-target patches.
+
+        The pseudo-target patches are the source bank mapped to the mean / covariance of the target patches.
+        """
         result = []
-        for index, (source_bank, chunks) in enumerate(zip(source_banks, per_band)):
-            target = torch.cat(chunks).to(device)
+        for index, (source_bank, chunk) in enumerate(zip(source_banks, target_chunks)):
+            target = chunk.to(device)
             parts = [reduce_to(target, target_quota, seed + index)]
             if pseudo_quota:
                 transfer = fit_domain_transfer(source_bank.to(device), target, self.domain_transfer, self.transfer_shrinkage)

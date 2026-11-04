@@ -45,8 +45,11 @@ def augment_waveform(
     if chance():
         wave = _eq_tilt(wave, generator, tilt_db)
     if chance():
-        factor = uniform(1 - speed, 1 + speed)
-        resampled = torchaudio.functional.resample(wave, sample_rate, max(1, int(round(sample_rate * factor))))
+        # the ratio is k / 100: torchaudio builds a resampling kernel of (reduced orig) x (reduced new) taps, so a random
+        # sample rate such as 15521 Hz (ratio 16000 / 15521, already reduced) costs about 1 GB and 10 s per call
+        steps = max(1, int(round(speed * 100)))
+        k = 100 + int(torch.randint(-steps, steps + 1, (1,), generator=generator))
+        resampled = torchaudio.functional.resample(wave, 100, k) if k != 100 else wave
         wave = torch.nn.functional.pad(resampled, (0, max(0, length - resampled.shape[-1])))[:length]
     if chance():
         wave = torch.roll(wave, int(torch.randint(0, length, (1,), generator=generator)))

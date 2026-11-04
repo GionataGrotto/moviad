@@ -20,7 +20,7 @@ class ToyBEATs(nn.Module):
             block.q_proj, block.v_proj = nn.Linear(DIM, DIM), nn.Linear(DIM, DIM)
 
     def preprocess(self, source, **kwargs):
-        return source.reshape(source.shape[0], FRAMES, BINS)
+        return source.reshape(source.shape[0], -1, BINS)
 
     def extract_features(self, source, padding_mask=None, **kwargs):
         x = self.patch_embedding(self.preprocess(source).unsqueeze(1)).flatten(2).transpose(1, 2).transpose(0, 1)  # (N, B, D)
@@ -120,3 +120,38 @@ def test_invalid_settings_are_rejected():
         adapt_beats(ToyExtractor(), Clips(), objective="other")
     with pytest.raises(ValueError, match="signal"):
         adapt_beats(ToyExtractor(), Clips(), signal="far")
+
+
+def test_a_random_window_of_every_clip_is_used_when_a_crop_is_asked():
+    seen = []
+    extractor = ToyExtractor()
+    original = extractor.model.preprocess
+
+    def spy(source, **kwargs):
+        seen.append(source.shape[-1])
+        return original(source, **kwargs)
+
+    extractor.model.preprocess = spy
+    adapt_beats(extractor, Clips(), objective="contrastive", epochs=1, batch_size=4, crop_seconds=1.0, sample_rate=256, lr=1e-2, rank=2, log=lambda *_: None)
+    assert seen and all(length == 256 for length in seen)  # the clips have 512 samples: only a window of 1 s is seen
+    seen.clear()
+    adapt_beats(ToyExtractor(), Clips(), objective="contrastive", epochs=1, batch_size=4, crop_seconds=None, lr=1e-2, rank=2, log=lambda *_: None)
+
+
+def test_clips_of_different_lengths_can_share_a_batch():
+    from moviad.models.audio.beats_ssl import crop_collate
+
+    generator = torch.Generator().manual_seed(0)
+    items = [torch.randn(2, 512), torch.randn(2, 1024), torch.randn(2, 768)]
+    assert crop_collate(None, generator)(items).shape == (3, 2, 512)  # the shortest clip sets the window
+    assert crop_collate(256, generator)(items).shape == (3, 2, 256)
+    assert crop_collate(4096, generator)(items).shape == (3, 2, 512)
+
+    class Mixed(torch.utils.data.Dataset):
+        def __len__(self):
+            return 8
+
+        def __getitem__(self, i):
+            return torch.randn(2, 512 if i % 2 else 768)
+
+    adapt_beats(ToyExtractor(), Mixed(), objective="reg", epochs=1, batch_size=4, crop_seconds=None, lr=1e-2, rank=2, log=lambda *_: None)

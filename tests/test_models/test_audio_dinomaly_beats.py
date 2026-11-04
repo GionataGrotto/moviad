@@ -79,3 +79,17 @@ def test_train_args_come_from_the_visual_implementation():
     model.train()
     args.init_train(model)
     assert model.train_step(normal_clips(8), args) > 0
+
+
+def test_checkpointing_the_decoder_gives_the_same_gradients():
+    from moviad.models.dinomaly.components import global_cosine_hm_percent
+
+    grads = []
+    for checkpoint_decoder in (False, True):
+        torch.manual_seed(1)
+        model = make_model(checkpoint_decoder=checkpoint_decoder)
+        model.train()
+        encoder, decoder = model(normal_clips(4))
+        global_cosine_hm_percent(encoder, decoder, p=0.0, factor=0.1).backward()
+        grads.append(torch.cat([p.grad.flatten() for p in model.trainable.parameters() if p.grad is not None]))
+    assert torch.allclose(grads[0], grads[1], atol=1e-5)

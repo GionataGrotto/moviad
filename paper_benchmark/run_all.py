@@ -189,7 +189,7 @@ SUMMARY = ROOT / "results" / "paper_benchmark" / "grid_summary.md"
 SCRATCH_SUMMARY = ROOT / "results" / "paper_benchmark" / "grid_summary_last_pair.md"
 #: shared BEATs adapters the plan needs: path (relative to the repo) -> train_beats_ssl.py arguments; made when missing
 ADAPTERS = {
-    f"adapters/ssl_{objective}_ls.pt": ["--objective", objective, "--signal", "ls", "--train-domains", "all"]
+    f"adapters/ssl_{objective}_ls.pt": ["--objective", objective, "--signal", "ls", "--train-domains", "all", "--epochs", "3"]
     for objective in ("reg", "mask", "contrastive")
 }
 FAILURES = ROOT / "results" / "paper_benchmark" / "all_failures.json"

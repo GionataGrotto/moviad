@@ -418,7 +418,7 @@ def attach_beats_ssl(method: str, model, config: dict[str, Any], dataset_path, m
         raise ValueError(f"beats_ssl needs a BEATs backbone (backbone: 'BEATs'); method {method!r} has none")
     domains = spec.get("train_domains", config.get("dcase2026", {}).get("train_domains", "source"))
     dataset = DCASE2026Task2Dataset(dataset_path, machine, "train", train_domains=domains, channel="stereo", target_sample_rate=BEATsFeatureExtractor.sample_rate)
-    options = {k: spec[k] for k in ("objective", "signal", "epochs", "lr", "rank", "alpha", "batch_size", "mask_ratio", "temperature") if k in spec}
+    options = {k: spec[k] for k in ("objective", "signal", "epochs", "lr", "rank", "alpha", "batch_size", "mask_ratio", "temperature", "crop_seconds") if k in spec}
     adapt_beats(extractor, dataset, seed=seed, **options)
 
 

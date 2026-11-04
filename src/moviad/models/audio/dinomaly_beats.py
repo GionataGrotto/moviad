@@ -16,6 +16,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn.init import trunc_normal_
+from torch.utils.checkpoint import checkpoint
 
 from moviad.models.dinomaly.components import Block as VitBlock
 from moviad.models.dinomaly.components import LinearAttention2, bMlp
@@ -34,6 +35,7 @@ class BEATsDinomaly(VADModel):
         num_heads: int | None = None,
         decoder_blocks: int = 8,
         distance: str = "cosine",
+        checkpoint_decoder: bool = True,
     ) -> None:
         super().__init__()
         if distance not in ("cosine", "l2"):
@@ -41,6 +43,7 @@ class BEATsDinomaly(VADModel):
         self.encoder = extractor
         self.device = torch.device(device)
         self.distance = distance
+        self.checkpoint_decoder = checkpoint_decoder  # recompute the decoder blocks in the backward pass: ~20x fewer stored activations
         cfg = getattr(extractor.model, "cfg", None)
         dim = dim or getattr(cfg, "encoder_embed_dim", None)
         if dim is None:
@@ -87,7 +90,10 @@ class BEATsDinomaly(VADModel):
             x = block(x)
         outputs = []
         for block in self.decoder:
-            x = block(x, attn_mask=None)
+            if self.training and self.checkpoint_decoder:
+                x = checkpoint(lambda tokens, block=block: block(tokens, attn_mask=None), x, use_reentrant=False)
+            else:
+                x = block(x, attn_mask=None)
             outputs.append(x)
         decoder = torch.stack(outputs, dim=0).mean(dim=0)
         return encoder, decoder.transpose(1, 2).reshape(batch, dim, time, freq)

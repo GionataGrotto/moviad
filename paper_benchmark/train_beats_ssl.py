@@ -37,7 +37,8 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--rank", type=int, default=8)
     parser.add_argument("--alpha", type=float, default=16.0)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--crop-seconds", type=float, default=4.0, help="random window of every clip used at each step (0: the whole clip)")
     parser.add_argument("--mask-ratio", type=float, default=0.5)
     parser.add_argument("--temperature", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=0)
@@ -56,7 +57,7 @@ def main() -> None:
     extractor = make_feature_extractor(config, device, frozen=True)
     history = adapt_beats(
         extractor, ConcatDataset(sets), objective=args.objective, signal=args.signal, epochs=args.epochs, lr=args.lr, rank=args.rank,
-        alpha=args.alpha, batch_size=args.batch_size, mask_ratio=args.mask_ratio, temperature=args.temperature, seed=args.seed,
+        alpha=args.alpha, batch_size=args.batch_size, mask_ratio=args.mask_ratio, temperature=args.temperature, seed=args.seed, crop_seconds=args.crop_seconds or None,
     )
     save_adapter(extractor, args.out, rank=args.rank, alpha=args.alpha, objective=args.objective, signal=args.signal, machines=machines,
                  loss=history, layers=args.layers)
