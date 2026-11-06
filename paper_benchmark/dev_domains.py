@@ -15,17 +15,38 @@ from pathlib import Path
 import numpy as np
 from scipy.stats import hmean
 
-from score_dcase_csv import evaluate_folder
+from score_dcase_csv import SCORE_FILE, auc_pair, evaluate_folder, read_scores
+
+
+def official_style_aucs(folder: Path) -> dict[str, tuple[float | None, float | None]]:
+    """``{machine: (source AUC, target AUC)}`` as the evaluator defines them: the normal clips of the domain against ALL the anomalous clips."""
+    result = {}
+    for path in sorted(Path(folder).glob("anomaly_score_*_test.csv")):
+        match = SCORE_FILE.match(path.name)
+        if match is None:
+            continue
+        rows = read_scores(path)
+        aucs = []
+        for domain in ("source", "target"):
+            chosen = [r for r in rows if r[0] == domain or r[1] == 1]
+            aucs.append(auc_pair([r[1] for r in chosen], [r[2] for r in chosen])[0] if any(r[0] == domain for r in rows) else None)
+        result[match["machine"]] = tuple(aucs)
+    return result
 
 
 def dev_domain_metrics(folder: Path) -> dict:
-    """``{"source": {machine: auc}, "target": {...}, "pauc": {...}, "official": float | None}`` of a score folder."""
+    """``{"source": {machine: auc}, "target": {...}, "pauc": {...}, "official": float | None}`` of a score folder.
+
+    ``source`` / ``target`` are the AUC of the clips of that domain alone; ``official`` is the evaluator's score
+    (harmonic mean of its source AUC, its target AUC and the pAUC of every machine, x 100).
+    """
     per = {name: {m: v[0] for m, v in evaluate_folder(folder, name).items() if v[0] is not None} for name in ("source", "target")}
     pauc = {m: v[1] for m, v in evaluate_folder(folder, "all").items() if v[1] is not None}
-    machines = sorted(set(per["source"]) & set(per["target"]) & set(pauc))
+    styled = {m: v for m, v in official_style_aucs(folder).items() if v[0] is not None and v[1] is not None}
+    machines = sorted(set(styled) & set(pauc))
     official = None
     if machines:
-        values = [per["source"][m] for m in machines] + [per["target"][m] for m in machines] + [pauc[m] for m in machines]
+        values = [styled[m][0] for m in machines] + [styled[m][1] for m in machines] + [pauc[m] for m in machines]
         official = float(hmean(np.maximum(values, 1e-12))) * 100
     return {"source": per["source"], "target": per["target"], "pauc": pauc, "official": official}
 

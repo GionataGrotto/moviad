@@ -408,6 +408,10 @@ Le prove `tgt_*` si testano su *entrambi* i domini con i 10 clip target nel trai
   `tgt_cmb_q10_aug10_mask`, `tgt_cmb_ps10_q10_aug10` e `tgt_cmb_ps10_q10_aug10_mask` (quota 10% del target, augmentation x10, pseudo-target 10%,
   BEATs adattato con `mask` condiviso: `adapters/ssl_mask_ls.pt`). Il piano ripete anche due seed di `tgt_pc_plain` e della combinazione
   con tutto (`_seed1`, `_seed2`) per misurare il rumore tra seed.
+- **Punteggio ufficiale:** l'AUC (source / target) del valutatore usa i clip normali del dominio contro *tutti* gli anomali; `official_evaluate.py --scores
+  nome=<cartella>` esegue lo script ufficiale sui punteggi (evaluation, oppure dev con `--ground-truth <cartella di un run dev>`) e lo confronta con la ricostruzione
+  di questo repo (`run_eval.py`, `dev_domains.py`), che ora coincide con quello ufficiale. Le AUC "sul dominio" (`auc_source`, `auc_target`) sono solo una misura interna.
+- Duplicazione esatta dei clip target: `tgt_pc_dup10` e `tgt_pc_dup10_quota10` (`target_augment_probability: 0`): con una bank k-center non dovrebbe cambiare nulla.
 - Sull'evaluation, `run_eval.py --extra tgt_pc_quota25:patchcore ...` esegue una prova scelta sul dev e la aggiunge al report.
 
 `diagnose_signal_features.py --dataset-path <DCASE>` calcola per macchina l'AUC di semplici statistiche

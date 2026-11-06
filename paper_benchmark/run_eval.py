@@ -17,6 +17,8 @@ Every pair runs in its own process, is retried once and skipped if its scores al
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import subprocess
 import sys
 import time
@@ -65,6 +67,9 @@ DEV_AUC = {
     ("baseline", "dinomaly"): 0.535,
 }
 PAIRS = list(DEV_AUC)
+#: repeats of an extra with another seed (``--extra-seeds``): (name with the seed, method) -> (experiment, seed)
+SEEDED: dict = {}
+FUSION_FILE = ROOT / "results" / "paper_benchmark" / "eval_fusions.json"
 #: (trained on source + target, trained on source only): what the target clips change, on the source and on the target AUC
 TARGET_PAIRS = [
     (("band_pc_banks_std_ls_train_all", "patchcore"), ("band_pc_banks_std_ls", "patchcore")),
@@ -111,8 +116,14 @@ def is_done(pair, machines: list[str], root: Path = ROOT) -> bool:
 
 def run_pair(pair, args, runner=subprocess.run) -> bool:
     experiment, method = pair
+    seed = None
+    if pair in SEEDED:
+        experiment, seed = SEEDED[pair]
     command = [sys.executable, str(HERE / "run_dcase_grid.py"), "--base-config", str(args.base_config), "--experiments", experiment,
-               "--methods", method, "--run-suffix", SUFFIX, "--epochs", str(args.epochs), "--summary", str(SCRATCH)]
+               "--methods", method, "--run-suffix", (f"_seed{seed}" if seed is not None else "") + SUFFIX, "--epochs", str(args.epochs),
+               "--summary", str(SCRATCH)]
+    if seed is not None:
+        command += ["--seed", str(seed)]
     for attempt in range(args.retries + 1):
         print(f"\n##### {experiment}:{method} (attempt {attempt + 1}/{args.retries + 1})", flush=True)
         if runner(command, cwd=ROOT).returncode == 0:
@@ -121,9 +132,55 @@ def run_pair(pair, args, runner=subprocess.run) -> bool:
     return False
 
 
+def discover_pairs(root: Path = ROOT) -> None:
+    """Add to ``PAIRS`` every ``grid_<name>_eval`` run found on disk, so that the report lists them all (extras, repeats with other seeds)."""
+    base = root / "dcase2026_task2_evaluator" / "dev"
+    for folder in sorted(base.glob(f"grid_*{SUFFIX}")):
+        name = folder.name[len("grid_") : -len(SUFFIX)]
+        for method_dir in sorted((folder / "teams" / "moviad").glob("*")):
+            pair = (name, method_dir.name)
+            if "@" not in method_dir.name and pair not in DEV_AUC:
+                DEV_AUC[pair] = None
+                PAIRS.append(pair)
+
+
+def load_fusions() -> dict[str, str]:
+    return json.loads(FUSION_FILE.read_text(encoding="utf-8")) if FUSION_FILE.exists() else {}
+
+
+def parse_fusion(spec: str) -> list[list[tuple[str, str]]]:
+    """``"a:patchcore + b:knn_ft + c:cfa&c_seed1:cfa"`` -> components; ``&`` joins runs that are averaged first (seeds of one method)."""
+    return [[tuple(pair.strip().split(":", 1)) for pair in component.split("&")] for component in spec.split("+")]
+
+
+def fuse_spec(spec: str, scores: dict):
+    """Rank-average fusion of a spec, or None if one of its runs has no complete scores."""
+    components = parse_fusion(spec)
+    if any(pair not in scores for component in components for pair in component):
+        return None
+    parts = {}
+    for index, component in enumerate(components):
+        label = "&".join(f"{e}:{m}" for e, m in component)
+        parts[label] = scores[component[0]] if len(component) == 1 else fuse({f"{e}:{m}": scores[(e, m)] for e, m in component})[0]
+    return fuse(parts)[0]
+
+
+def seed_groups(results: dict) -> list[tuple[str, list]]:
+    """Runs of the same experiment that differ only by ``_seedN``: ``[(base name:method, [pairs])]`` with at least two runs."""
+    groups: dict = {}
+    for pair in results:
+        match = re.match(r"^(.*)_seed\d+$", pair[0])
+        groups.setdefault((match.group(1) if match else pair[0], pair[1]), []).append(pair)
+    return [(f"{name}:{method}", pairs) for (name, method), pairs in groups.items() if len(pairs) > 1]
+
+
 def official_score(result: dict) -> float:
-    """The evaluator's score: harmonic mean of the source AUC, the target AUC and the pAUC of every machine (x 100)."""
-    values = ([m["auc_source"] for m in result.values()] + [m["auc_target"] for m in result.values()] + [m["pauc_all"] for m in result.values()])
+    """The evaluator's score: harmonic mean over the machines of the source AUC, the target AUC and the pAUC (x 100).
+
+    The AUC of a domain is that of its normal clips against all the anomalous clips (source and target), as in the official script.
+    """
+    values = ([m["auc_source_official"] for m in result.values()] + [m["auc_target_official"] for m in result.values()]
+              + [m["pauc_all"] for m in result.values()])
     return float(hmean(np.maximum(np.array(values, dtype=float), 1e-12))) * 100
 
 
@@ -138,6 +195,7 @@ def dev_diff(with_ls, without) -> str:
 
 def build_report(root: Path = ROOT, gt_root: Path = GT_ROOT) -> list[str]:
     machines = eval_machines(gt_root)
+    discover_pairs(root)
     scores, results = {}, {}
     for pair in PAIRS:
         if is_done(pair, machines, root):
@@ -173,6 +231,26 @@ def build_report(root: Path = ROOT, gt_root: Path = GT_ROOT) -> list[str]:
         if with_ls in results and without in results:
             a, b = mean_metric(results[with_ls]), mean_metric(results[without])
             lines.append(f"| {with_ls[0]}:{with_ls[1]} | {without[0]}:{without[1]} | {a:.3f} | {b:.3f} | {a - b:+.3f} | {dev_diff(with_ls, without)} |")
+    seeds = seed_groups(results)
+    if seeds:
+        lines += ["", "## Rumore tra seed (stessa configurazione, seed diversi)", "",
+                  "| Configurazione | Run | AUC source (media) | AUC target (media) | Punteggio ufficiale: media | minimo - massimo | scarto tipo |", "|---|---|---|---|---|---|---|"]
+        for label, pairs in seeds:
+            official = [official_score(results[p]) for p in pairs]
+            lines.append(f"| {label} | {len(pairs)} | {np.mean([mean_metric(results[p]) for p in pairs]):.3f} | "
+                         f"{np.mean([mean_metric(results[p], 'auc_target') for p in pairs]):.3f} | {np.mean(official):.1f} | "
+                         f"{min(official):.1f} - {max(official):.1f} | {np.std(official):.2f} |")
+    requested = load_fusions()
+    if requested:
+        lines += ["", "## Fusioni richieste (rank medio per macchina, pesi uguali tra i componenti; `&` = media dei seed dello stesso metodo)", "",
+                  f"| Fusione | AUC source | AUC target | Punteggio ufficiale | {columns} |", "|---|---|---|---|" + "---|" * len(machines)]
+        for label, spec in requested.items():
+            combined = fuse_spec(spec, scores)
+            if combined is None:
+                lines.append(f"| {label} | n/d | | | |")
+                continue
+            result = evaluate(combined, gt_root)
+            lines.append(f"| {label} | {mean_metric(result):.3f} | {mean_metric(result, 'auc_target'):.3f} | {official_score(result):.1f} | {per_machine(result)} |")
     lines += ["", "## Con i 10 clip target nel training (protocollo ufficiale) e senza", "",
               "| Metodo | Con target: source | Con target: target | Con target: ufficiale | Senza: source | Senza: target | Senza: ufficiale | Differenza ufficiale |",
               "|---|---|---|---|---|---|---|---|"]
@@ -210,6 +288,11 @@ def main() -> None:
     parser.add_argument("--skip-ls-check", action="store_true", help="do not run the configurations without LS")
     parser.add_argument("--extra", nargs="+", default=[], metavar="EXPERIMENT:METHOD",
                         help="more grid experiments to run on the evaluation set and add to the report (e.g. tgt_pc_quota25:patchcore)")
+    parser.add_argument("--extra-seeds", nargs="+", type=int, default=[], metavar="SEED",
+                        help="also run every --extra with these seeds (suffix _seedN); the base run is the one with the default seed")
+    parser.add_argument("--fusion", nargs="+", default=[], metavar="LABEL=SPEC",
+                        help="a fusion to report, e.g. 'pc+knn=tgt_pc_quota10:patchcore + knn_ft_ls_both:knn_ft'; runs joined by & are averaged "
+                             "first (seeds); it is saved in results/paper_benchmark/eval_fusions.json and stays in the report")
     parser.add_argument("--report-only", action="store_true", help="rebuild the report from the saved scores, run nothing")
     args = parser.parse_args()
 
@@ -220,6 +303,21 @@ def main() -> None:
         if (experiment, method) not in DEV_AUC:
             DEV_AUC[(experiment, method)] = None
             PAIRS.append((experiment, method))
+        for seed in args.extra_seeds:
+            pair = (f"{experiment}_seed{seed}", method)
+            SEEDED[pair] = (experiment, seed)
+            if pair not in DEV_AUC:
+                DEV_AUC[pair] = None
+                PAIRS.append(pair)
+    if args.fusion:
+        saved = load_fusions()
+        for item in args.fusion:
+            label, sep, spec = item.partition("=")
+            if not sep:
+                parser.error(f"--fusion expects LABEL=SPEC, got {item!r}")
+            saved[label.strip()] = spec.strip()
+        FUSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        FUSION_FILE.write_text(json.dumps(saved, indent=2, ensure_ascii=False), encoding="utf-8")
     machines = eval_machines()
     failed = []
     if not args.report_only:

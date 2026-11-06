@@ -52,7 +52,54 @@ def test_report_is_built_from_saved_scores(tmp_path):
 def test_target_pairs_are_in_the_plan_and_the_official_score_is_a_harmonic_mean():
     for with_target, without in run_eval.TARGET_PAIRS:
         assert with_target in run_eval.DEV_AUC and without in run_eval.DEV_AUC
-    result = {"a": {"auc_source": 0.8, "auc_target": 0.8, "pauc_all": 0.8}, "b": {"auc_source": 0.8, "auc_target": 0.8, "pauc_all": 0.8}}
+    result = {"a": {"auc_source_official": 0.8, "auc_target_official": 0.8, "pauc_all": 0.8},
+              "b": {"auc_source_official": 0.8, "auc_target_official": 0.8, "pauc_all": 0.8}}
     assert abs(run_eval.official_score(result) - 80.0) < 1e-6
-    result["b"]["auc_target"] = 0.4
+    result["b"]["auc_target_official"] = 0.4
     assert run_eval.official_score(result) < 80.0 * 0.95
+
+
+def test_a_repeat_with_another_seed_is_run_with_its_own_suffix_and_seed():
+    calls = []
+    pair = ("tgt_pc_quota10_seed2", "patchcore")
+    run_eval.SEEDED[pair] = ("tgt_pc_quota10", 2)
+
+    def runner(command, cwd=None):
+        calls.append(command)
+        return types.SimpleNamespace(returncode=0)
+
+    args = types.SimpleNamespace(base_config="c.json", epochs=30, retries=0, retry_wait=0)
+    assert run_eval.run_pair(pair, args, runner) is True
+    command = calls[0]
+    assert command[command.index("--experiments") + 1] == "tgt_pc_quota10"
+    assert command[command.index("--run-suffix") + 1] == "_seed2_eval" and command[command.index("--seed") + 1] == "2"
+    assert run_eval.run_folder(pair, Path("/r")).parts[-4] == "grid_tgt_pc_quota10_seed2_eval"
+    run_eval.SEEDED.pop(pair)
+
+
+def test_fusion_specs_average_the_runs_joined_by_an_ampersand_and_report_missing_ones():
+    import numpy as np
+
+    files = [f"section_00_{i:04d}.wav" for i in range(1, 9)]
+    rng = np.random.default_rng(0)
+    scores = {(name, "m"): {"Toy": dict(zip(files, rng.normal(size=8)))} for name in ("a", "b", "b_seed1", "b_seed2")}
+    assert run_eval.parse_fusion("a:m + b:m&b_seed1:m") == [[("a", "m")], [("b", "m"), ("b_seed1", "m")]]
+    fused = run_eval.fuse_spec("a:m + b:m&b_seed1:m&b_seed2:m", scores)
+    assert set(fused) == {"Toy"} and set(fused["Toy"]) == set(files)
+    assert run_eval.fuse_spec("a:m + missing:m", scores) is None
+
+
+def test_seed_groups_collect_runs_that_differ_only_by_the_seed():
+    results = {("x", "patchcore"): 1, ("x_seed1", "patchcore"): 2, ("x_seed2", "patchcore"): 3, ("y", "patchcore"): 4, ("x", "knn"): 5}
+    groups = dict(run_eval.seed_groups(results))
+    assert list(groups) == ["x:patchcore"] and len(groups["x:patchcore"]) == 3
+
+
+def test_every_eval_run_on_disk_is_listed_in_the_report(tmp_path):
+    folder = tmp_path / "dcase2026_task2_evaluator" / "dev" / "grid_new_experiment_eval" / "teams" / "moviad"
+    (folder / "patchcore").mkdir(parents=True)
+    (folder / "patchcore@max").mkdir()
+    run_eval.discover_pairs(tmp_path)
+    assert ("new_experiment", "patchcore") in run_eval.PAIRS and ("new_experiment", "patchcore@max") not in run_eval.PAIRS
+    run_eval.PAIRS.remove(("new_experiment", "patchcore"))
+    run_eval.DEV_AUC.pop(("new_experiment", "patchcore"))

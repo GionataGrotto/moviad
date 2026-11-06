@@ -279,6 +279,23 @@ def test_combinations_join_the_target_options_and_use_the_shared_mask_adapter():
     assert len(grid.PRESETS["target_combinations"]) == 6
 
 
+def test_duplication_experiments_switch_the_augmentation_off():
+    base = {"dcase2026": {"dataset_path": "/data"}}
+    dup = grid.build_config(base, "tgt_pc_dup10", 5)
+    assert dup["target_augment_copies"] == 10 and dup["target_augment_probability"] == 0.0
+    assert grid.build_config(base, "tgt_pc_dup10_quota10", 5)["patchcore_target_fraction"] == 0.10
+    assert grid.build_config(base, "tgt_pc_aug10", 5).get("target_augment_probability") is None
+
+
+def test_dinomaly_with_the_masked_adapter_scores_with_the_mean():
+    base = {"dcase2026": {"dataset_path": "/data"}}
+    config = grid.build_config(base, "dino_beats_ls_mask_tw", 5)
+    assert config["beats_adapter"] == "adapters/ssl_mask_ls.pt" and config["train_target_weight"] == "balance"
+    assert config["dcase2026"]["score_aggregation"] == "mean" and config["dcase2026"]["test_domain"] == "all"
+    assert grid.build_config(base, "dino_beats_ls_mask", 5)["dcase2026"]["score_aggregation"] == "mean"
+    assert "dino_beats_ls_mask" in grid.PRESETS["dinomaly_beats"]
+
+
 def test_target_protocol_experiments_test_on_both_domains_and_train_with_the_target_clips():
     base = {"dcase2026": {"dataset_path": "/data"}}
     for name in grid.PRESETS["target_domain"]:

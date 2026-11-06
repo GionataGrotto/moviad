@@ -48,7 +48,10 @@ def machine_metrics(scores: dict[str, float], labels: dict[str, int], domains: d
     out = {"auc_all": roc_auc_score(y, s), "pauc_all": roc_auc_score(y, s, max_fpr=0.1)}
     for name, flag in (("source", 0), ("target", 1)):
         mask = d == flag
-        out[f"auc_{name}"] = roc_auc_score(y[mask], s[mask]) if len(np.unique(y[mask])) == 2 else None
+        out[f"auc_{name}"] = roc_auc_score(y[mask], s[mask]) if len(np.unique(y[mask])) == 2 else None  # the clips of this domain only
+        # what the official evaluator calls AUC (source / target): the normal clips of the domain against ALL the anomalous clips
+        official = mask | (y == 1)
+        out[f"auc_{name}_official"] = roc_auc_score(y[official], s[official]) if len(np.unique(y[official])) == 2 else None
     return out
 
 

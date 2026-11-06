@@ -78,6 +78,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "patchcore_transfer_shrinkage": 0.5,
     "target_augment_copies": 0,
     "target_augment_mix": False,
+    "target_augment_probability": None,  # 0: the copies are exact duplicates of the target clips
     "train_target_weight": None,
     "beats_adapter": None,
     "beats_ssl": None,
@@ -451,7 +452,8 @@ def build_fit_loaders(config: dict[str, Any], method: str, dataset_path, machine
     source_ds, target_ds = dataset("source"), dataset("target")
     parts = [target_ds]
     if copies:
-        parts.append(AugmentedDataset(target_ds, copies, seed, sample_rate, mix_with=source_ds if config.get("target_augment_mix") else None))
+        options = {} if config.get("target_augment_probability") is None else {"probability": float(config["target_augment_probability"])}
+        parts.append(AugmentedDataset(target_ds, copies, seed, sample_rate, mix_with=source_ds if config.get("target_augment_mix") else None, **options))
     target_set = ConcatDataset(parts)
     if quotas:
         return (

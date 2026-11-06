@@ -115,6 +115,14 @@ PLAN: list[tuple[str, str, str, int | None]] = [
     *[(name, "dinomaly", "", None) for name in PRESETS["dinomaly_beats"]],
     # round 8: combinations of the target options, and two more seeds of the reference and of the all-in combination (the noise)
     *[(name, "patchcore", "", None) for name in PRESETS["target_combinations"]],
+    # round 9: the detectors to fuse with PatchCore on the target protocol (CFA with five seeds, to average them)
+    ("knn_ft_ls_both", "knn_ft", "", None),
+    ("knn_ls_both", "knn", "", None),
+    ("cfa_b12_ls_both", "cfa", "", None),
+    ("cfa_b12_ls_both", "cfa", "_seed1", 1),
+    ("cfa_b12_ls_both", "cfa", "_seed2", 2),
+    ("cfa_b12_ls_both", "cfa", "_seed3", 3),
+    ("cfa_b12_ls_both", "cfa", "_seed4", 4),
     ("tgt_pc_plain", "patchcore", "_seed1", 1),
     ("tgt_pc_plain", "patchcore", "_seed2", 2),
     ("tgt_cmb_q10_aug10_mask", "patchcore", "_seed1", 1),
@@ -135,7 +143,7 @@ EXTRA_AGGREGATIONS = ["frames10pct", "frames25pct", "frames50pct"]
 #: Later groups are more likely to fail (new code, a model never run on real data, long runs, a method that failed before), so a
 #: crash costs the least: the plan is sorted by group (stable inside a group) right after it is defined.
 _RISK_GROUPS = [
-    {"tgt_pc_source_only", "tgt_pc_plain"},  # PatchCore, both domains: configuration only
+    {"tgt_pc_source_only", "tgt_pc_plain", "tgt_pc_dup10", "tgt_pc_dup10_quota10"},  # PatchCore, both domains: configuration only (+ exact copies)
     {"tgt_pc_quota10", "tgt_pc_quota25", "tgt_pc_quota50", "tgt_pc_aug10", "tgt_pc_aug10_quota25", "tgt_pc_aug10mix_quota25"},  # new PatchCore code
     {"tgt_pc_pseudo_meanstd", "tgt_pc_pseudo_coral"},  # domain transfer: eigendecomposition of a 2304x2304 matrix for coral
     {"tgt_cmb_q10_aug10", "tgt_cmb_ps10_q10_aug10"},  # combinations of target options without the adapted BEATs
@@ -143,7 +151,8 @@ _RISK_GROUPS = [
     {"dino_beats_ls", "dino_beats_ls_l2", "dino_beats_ls_both", "dino_beats_ls_tw", "dino_beats_ls_tw_l2"},  # a new model, trained for 30 epochs
     {"ssl_pc_reg_ls_shared", "ssl_pc_mask_ls_shared", "ssl_pc_contrastive_ls_shared"},  # also need the adapter to be trained first
     {"tgt_cmb_q10_mask", "tgt_cmb_aug10_mask", "tgt_cmb_q10_aug10_mask", "tgt_cmb_ps10_q10_aug10_mask"},  # these use the shared mask adapter
-    {"dino_beats_ls_ssl", "dino_beats_ls_ssl_tw"},  # two risky things together
+    {"knn_ft_ls_both", "knn_ls_both", "cfa_b12_ls_both"},  # to be fused with PatchCore: CFA is the unstable one
+    {"dino_beats_ls_ssl", "dino_beats_ls_ssl_tw", "dino_beats_ls_mask", "dino_beats_ls_mask_tw"},  # two risky things together
     {"stfpm_beats_late_adamw_1e5", "stfpm_beats_b12_adamw_1e5"},  # failed on 3 of 7 machines before
 ]
 

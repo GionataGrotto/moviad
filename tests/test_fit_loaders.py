@@ -43,6 +43,16 @@ def test_patchcore_quota_separates_the_domains_and_augments_the_target(tmp_path)
     assert (originals.mean(dim=1).abs() > 1.0).float().mean() > 0.5  # the clips of this loader are target clips (level shifted)
 
 
+def test_exact_duplicates_when_the_augmentation_probability_is_zero(tmp_path):
+    make_dataset(tmp_path)
+    _, _, (fit_loader, target_loader) = run(tmp_path, patchcore_target_fraction=0.25, target_augment_copies=3, target_augment_probability=0.0)
+    target = torch.cat([batch for batch in target_loader])
+    assert len(target) == 2 + 2 * 3
+    originals = target[:2]
+    for copy in target[2:]:
+        assert any(torch.allclose(copy, original) for original in originals)  # every copy is one of the 2 original clips
+
+
 def test_gradient_methods_get_the_target_clips_weighted(tmp_path):
     make_dataset(tmp_path)
     _, _, (fit_loader, target_loader) = run(tmp_path, method="dinomaly", train_target_weight="balance", target_augment_copies=2)

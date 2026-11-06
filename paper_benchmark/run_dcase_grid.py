@@ -253,6 +253,11 @@ _define("tgt_pc_pseudo_coral", "PatchCore LS, 10% target quota + 25% pseudo-targ
 # more target clips: augmentation
 _define("tgt_pc_aug10", "PatchCore LS, + 10 augmentations of every target clip, in the normal stream",
         _patchcore(target_augment_copies=10, dcase=_LS), {"patchcore"})
+# the plain duplication: exact copies of the 10 target clips (probability 0 of every augmentation); with a k-center bank it should change nothing
+_define("tgt_pc_dup10", "PatchCore LS, + 10 exact copies of every target clip (no augmentation), in the normal stream",
+        _patchcore(target_augment_copies=10, target_augment_probability=0.0, dcase=_LS), {"patchcore"})
+_define("tgt_pc_dup10_quota10", "PatchCore LS, 10 exact copies of every target clip + 10% target quota",
+        _patchcore(target_augment_copies=10, target_augment_probability=0.0, patchcore_target_fraction=0.10, dcase=_LS), {"patchcore"})
 _define("tgt_pc_aug10_quota25", "PatchCore LS, 10 augmentations per target clip + 25% target quota",
         _patchcore(target_augment_copies=10, patchcore_target_fraction=0.25, dcase=_LS), {"patchcore"})
 _define("tgt_pc_aug10mix_quota25", "PatchCore LS, augmentations mixed lightly with source clips + 25% target quota",
@@ -311,10 +316,25 @@ _combination("tgt_cmb_q10_aug10_mask", "PatchCore LS: 10% target quota + augment
 _combination("tgt_cmb_ps10_q10_aug10", "PatchCore LS: 10% pseudo-target + 10% quota + augmentations", quota=0.10, pseudo=0.10, augment=10)
 _combination("tgt_cmb_ps10_q10_aug10_mask", "PatchCore LS: 10% pseudo-target + 10% quota + augmentations + masked-patch BEATs",
              quota=0.10, pseudo=0.10, augment=10, mask=True)
+# detectors that can be fused with PatchCore on the target protocol: the target clips are in the training set, both domains are tested
+_define("knn_ft_ls_both", "LoRA + ArcFace kNN on LS, + 10 target clips, tested on both domains", {"dcase2026": {**_BOTH, **_LS}}, {"knn_ft"})
+_define("knn_ls_both", "kNN BEATs blocks 8,10,12 on LS, + 10 target clips, tested on both domains",
+        {"knn_layers": [8, 10, 12], "dcase2026": {**_BOTH, **_LS}}, {"knn"})
+_define("cfa_b12_ls_both", "CFA on BEATs block 12 + LS, + 10 target clips, tested on both domains",
+        {"backbone": "BEATs", "layers": [12], "dcase2026": {**_BOTH, **_LS}}, {"cfa"})
+PRESETS["target_fusion_parts"] = ["knn_ft_ls_both", "knn_ls_both", "cfa_b12_ls_both"]
 PRESETS["target_combinations"] = [name for name in EXPERIMENTS if name.startswith("tgt_cmb_")]
-PRESETS["target_domain"] = ["tgt_pc_source_only", "tgt_pc_plain", "tgt_pc_quota10", "tgt_pc_quota25", "tgt_pc_quota50", "tgt_pc_pseudo_meanstd",
+PRESETS["target_domain"] = ["tgt_pc_dup10", "tgt_pc_dup10_quota10", "tgt_pc_source_only", "tgt_pc_plain", "tgt_pc_quota10", "tgt_pc_quota25", "tgt_pc_quota50", "tgt_pc_pseudo_meanstd",
                             "tgt_pc_pseudo_coral", "tgt_pc_aug10", "tgt_pc_aug10_quota25", "tgt_pc_aug10mix_quota25"]
 PRESETS["ssl_patchcore"] = [name for name in EXPERIMENTS if name.startswith("ssl_pc_")]
+# round 9: Dinomaly with the masked-patch BEATs (the only self-supervised adaptation that helped PatchCore) and the mean of the map as its score
+# (on BEATs + LS the mean beats the temporal top-k and the top 10%: 0.695 against 0.685 and 0.681)
+_dino_mean = {"score_aggregation": "mean"}
+_define("dino_beats_ls_mask", "Dinomaly on BEATs + LS with the masked-patch adapter (shared), score = mean of the map",
+        {**_dino, "beats_adapter": "adapters/ssl_mask_ls.pt", "dcase2026": {**_LS, **_dino_mean}}, {"dinomaly"})
+_define("dino_beats_ls_mask_tw", "Dinomaly on masked-patch BEATs + LS, balanced target clips (10 augmentations each), score = mean",
+        {**_dino, "beats_adapter": "adapters/ssl_mask_ls.pt", "train_target_weight": "balance", "target_augment_copies": 10,
+         "dcase2026": {**_BOTH, **_LS, **_dino_mean}}, {"dinomaly"})
 PRESETS["dinomaly_beats"] = [name for name in EXPERIMENTS if name.startswith("dino_beats_")]
 
 
