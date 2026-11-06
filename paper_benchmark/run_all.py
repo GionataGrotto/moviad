@@ -113,6 +113,12 @@ PLAN: list[tuple[str, str, str, int | None]] = [
     *[(name, "patchcore", "", None) for name in PRESETS["target_domain"]],
     *[(name, "patchcore", "", None) for name in PRESETS["ssl_patchcore"]],
     *[(name, "dinomaly", "", None) for name in PRESETS["dinomaly_beats"]],
+    # round 8: combinations of the target options, and two more seeds of the reference and of the all-in combination (the noise)
+    *[(name, "patchcore", "", None) for name in PRESETS["target_combinations"]],
+    ("tgt_pc_plain", "patchcore", "_seed1", 1),
+    ("tgt_pc_plain", "patchcore", "_seed2", 2),
+    ("tgt_cmb_q10_aug10_mask", "patchcore", "_seed1", 1),
+    ("tgt_cmb_q10_aug10_mask", "patchcore", "_seed2", 2),
     # STFPM: optimiser and BEATs student
     ("baseline", "stfpm", "", None),
     ("stfpm_sgd_lr0p1", "stfpm", "", None),
@@ -132,9 +138,11 @@ _RISK_GROUPS = [
     {"tgt_pc_source_only", "tgt_pc_plain"},  # PatchCore, both domains: configuration only
     {"tgt_pc_quota10", "tgt_pc_quota25", "tgt_pc_quota50", "tgt_pc_aug10", "tgt_pc_aug10_quota25", "tgt_pc_aug10mix_quota25"},  # new PatchCore code
     {"tgt_pc_pseudo_meanstd", "tgt_pc_pseudo_coral"},  # domain transfer: eigendecomposition of a 2304x2304 matrix for coral
+    {"tgt_cmb_q10_aug10", "tgt_cmb_ps10_q10_aug10"},  # combinations of target options without the adapted BEATs
     {"ssl_pc_reg_near", "ssl_pc_reg_ls", "ssl_pc_reg_near_on_ls", "ssl_pc_mask_near", "ssl_pc_mask_ls", "ssl_pc_contrastive_near", "ssl_pc_contrastive_ls"},
     {"dino_beats_ls", "dino_beats_ls_l2", "dino_beats_ls_both", "dino_beats_ls_tw", "dino_beats_ls_tw_l2"},  # a new model, trained for 30 epochs
     {"ssl_pc_reg_ls_shared", "ssl_pc_mask_ls_shared", "ssl_pc_contrastive_ls_shared"},  # also need the adapter to be trained first
+    {"tgt_cmb_q10_mask", "tgt_cmb_aug10_mask", "tgt_cmb_q10_aug10_mask", "tgt_cmb_ps10_q10_aug10_mask"},  # these use the shared mask adapter
     {"dino_beats_ls_ssl", "dino_beats_ls_ssl_tw"},  # two risky things together
     {"stfpm_beats_late_adamw_1e5", "stfpm_beats_b12_adamw_1e5"},  # failed on 3 of 7 machines before
 ]

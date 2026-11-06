@@ -404,6 +404,10 @@ Le prove `tgt_*` si testano su *entrambi* i domini con i 10 clip target nel trai
   all'indietro (`checkpoint_decoder`) e per le prove `dino_beats_*` usa 12 epoche (BEATs 768 canali, ~500 token per clip).
   Una quota target che i clip target non riempiono (10 clip danno ~620 patch per banda) torna alle patch source.
   Le augmentation cambiano la velocita' con un rapporto k/100: una frequenza casuale costerebbe ~1 GB e 10 s per chiamata.
+- Combinazioni (preset `target_combinations`, round 8): `tgt_cmb_q10_aug10`, `tgt_cmb_q10_mask`, `tgt_cmb_aug10_mask`,
+  `tgt_cmb_q10_aug10_mask`, `tgt_cmb_ps10_q10_aug10` e `tgt_cmb_ps10_q10_aug10_mask` (quota 10% del target, augmentation x10, pseudo-target 10%,
+  BEATs adattato con `mask` condiviso: `adapters/ssl_mask_ls.pt`). Il piano ripete anche due seed di `tgt_pc_plain` e della combinazione
+  con tutto (`_seed1`, `_seed2`) per misurare il rumore tra seed.
 - Sull'evaluation, `run_eval.py --extra tgt_pc_quota25:patchcore ...` esegue una prova scelta sul dev e la aggiunge al report.
 
 `diagnose_signal_features.py --dataset-path <DCASE>` calcola per macchina l'AUC di semplici statistiche

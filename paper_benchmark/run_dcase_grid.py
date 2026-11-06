@@ -289,6 +289,29 @@ _define("dino_beats_ls_ssl_tw", "Dinomaly on adapted BEATs + LS with balanced ta
         {**_dino, "beats_ssl": {"objective": "reg", "signal": "ls", **_SSL}, "train_target_weight": "balance", "target_augment_copies": 10,
          "dcase2026": {**_BOTH, **_LS}}, {"dinomaly"})
 
+# Round 8: combinations of what helped the target on its own (a quota of the bank, augmented target clips, the masked-patch BEATs).
+# The pieces act on different things (the bank, the number of target patches, the features), so the gains may add up.
+def _combination(name, description, quota=0.0, pseudo=0.0, augment=0, mask=False):
+    extra = {}
+    if quota:
+        extra["patchcore_target_fraction"] = quota
+    if pseudo:
+        extra.update(patchcore_pseudo_fraction=pseudo, patchcore_domain_transfer="meanstd")
+    if augment:
+        extra["target_augment_copies"] = augment
+    if mask:
+        extra["beats_adapter"] = "adapters/ssl_mask_ls.pt"  # shared adapter, made by train_beats_ssl.py / run_all.py when missing
+    _define(name, description, _patchcore(dcase=_LS, **extra), {"patchcore"})
+
+
+_combination("tgt_cmb_q10_aug10", "PatchCore LS: 10% target quota + 10 augmentations per target clip", quota=0.10, augment=10)
+_combination("tgt_cmb_q10_mask", "PatchCore LS: 10% target quota + masked-patch BEATs (shared)", quota=0.10, mask=True)
+_combination("tgt_cmb_aug10_mask", "PatchCore LS: 10 augmentations per target clip + masked-patch BEATs (shared)", augment=10, mask=True)
+_combination("tgt_cmb_q10_aug10_mask", "PatchCore LS: 10% target quota + augmentations + masked-patch BEATs (shared)", quota=0.10, augment=10, mask=True)
+_combination("tgt_cmb_ps10_q10_aug10", "PatchCore LS: 10% pseudo-target + 10% quota + augmentations", quota=0.10, pseudo=0.10, augment=10)
+_combination("tgt_cmb_ps10_q10_aug10_mask", "PatchCore LS: 10% pseudo-target + 10% quota + augmentations + masked-patch BEATs",
+             quota=0.10, pseudo=0.10, augment=10, mask=True)
+PRESETS["target_combinations"] = [name for name in EXPERIMENTS if name.startswith("tgt_cmb_")]
 PRESETS["target_domain"] = ["tgt_pc_source_only", "tgt_pc_plain", "tgt_pc_quota10", "tgt_pc_quota25", "tgt_pc_quota50", "tgt_pc_pseudo_meanstd",
                             "tgt_pc_pseudo_coral", "tgt_pc_aug10", "tgt_pc_aug10_quota25", "tgt_pc_aug10mix_quota25"]
 PRESETS["ssl_patchcore"] = [name for name in EXPERIMENTS if name.startswith("ssl_pc_")]

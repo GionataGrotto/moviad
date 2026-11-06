@@ -267,6 +267,18 @@ def test_stfpm_experiments_set_the_optimizer_and_only_run_stfpm():
     assert "baseline" in grid.PRESETS["stfpm_search"] and "layers_deep" in grid.PRESETS["stfpm_search"]
 
 
+def test_combinations_join_the_target_options_and_use_the_shared_mask_adapter():
+    base = {"dcase2026": {"dataset_path": "/data"}}
+    everything = grid.build_config(base, "tgt_cmb_q10_aug10_mask", 5)
+    assert everything["patchcore_target_fraction"] == 0.10 and everything["target_augment_copies"] == 10
+    assert everything["beats_adapter"] == "adapters/ssl_mask_ls.pt" and everything["dcase2026"]["channel"] == "ls"
+    assert everything["dcase2026"]["test_domain"] == "all" and everything["dcase2026"]["train_domains"] == "all"
+    pseudo = grid.build_config(base, "tgt_cmb_ps10_q10_aug10", 5)
+    assert pseudo["patchcore_pseudo_fraction"] == 0.10 and pseudo["patchcore_domain_transfer"] == "meanstd" and "beats_adapter" not in pseudo
+    assert grid.build_config(base, "tgt_cmb_aug10_mask", 5).get("patchcore_target_fraction") in (None, 0.0)
+    assert len(grid.PRESETS["target_combinations"]) == 6
+
+
 def test_target_protocol_experiments_test_on_both_domains_and_train_with_the_target_clips():
     base = {"dcase2026": {"dataset_path": "/data"}}
     for name in grid.PRESETS["target_domain"]:

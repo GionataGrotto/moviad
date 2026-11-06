@@ -95,6 +95,17 @@ def test_round_seven_is_in_the_plan():
     assert "tgt_pc_quota25:patchcore" in labels and "ssl_pc_mask_ls:patchcore" in labels and "dino_beats_ls_tw:dinomaly" in labels
 
 
+def test_combinations_and_their_seeds_are_in_the_plan_the_adapter_ones_after_the_adapters():
+    labels = [run_all.pair_label(p) for p in run_all.PLAN]
+    position = {label: i for i, label in enumerate(labels)}
+    assert "tgt_cmb_q10_aug10:patchcore" in position
+    assert {"tgt_pc_plain_seed1:patchcore", "tgt_pc_plain_seed2:patchcore", "tgt_cmb_q10_aug10_mask_seed1:patchcore", "tgt_cmb_q10_aug10_mask_seed2:patchcore"} <= set(labels)
+    shared = position["ssl_pc_mask_ls_shared:patchcore"]
+    for name in ("tgt_cmb_q10_mask", "tgt_cmb_aug10_mask", "tgt_cmb_q10_aug10_mask", "tgt_cmb_ps10_q10_aug10_mask"):
+        assert position[f"{name}:patchcore"] > shared  # they need the shared mask adapter, which the shared-SSL runs make
+    assert position["tgt_cmb_q10_aug10:patchcore"] < position["ssl_pc_reg_ls:patchcore"]
+
+
 def test_the_plan_runs_the_riskiest_pairs_last():
     labels = [run_all.pair_label(p) for p in run_all.PLAN]
     position = {label: i for i, label in enumerate(labels)}
