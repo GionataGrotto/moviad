@@ -322,6 +322,14 @@ _define("knn_ls_both", "kNN BEATs blocks 8,10,12 on LS, + 10 target clips, teste
         {"knn_layers": [8, 10, 12], "dcase2026": {**_BOTH, **_LS}}, {"knn"})
 _define("cfa_b12_ls_both", "CFA on BEATs block 12 + LS, + 10 target clips, tested on both domains",
         {"backbone": "BEATs", "layers": [12], "dcase2026": {**_BOTH, **_LS}}, {"cfa"})
+
+# Round 10: variations of the best configuration (PatchCore LS + a quota of the bank for the target patches)
+for _share in (2, 5):
+    _define(f"tgt_pc_quota{_share}", f"PatchCore LS, {_share}% of the bank reserved for the target patches",
+            _patchcore(patchcore_target_fraction=_share / 100, dcase=_LS), {"patchcore"})
+for _share in (5, 10):
+    _define(f"tgt_pc_quota{_share}_b6_9_12", f"PatchCore LS on BEATs blocks 6,9,12, {_share}% of the bank reserved for the target patches",
+            _patchcore(layers=[6, 9, 12], patchcore_target_fraction=_share / 100, dcase=_LS), {"patchcore"})
 PRESETS["target_fusion_parts"] = ["knn_ft_ls_both", "knn_ls_both", "cfa_b12_ls_both"]
 PRESETS["target_combinations"] = [name for name in EXPERIMENTS if name.startswith("tgt_cmb_")]
 PRESETS["target_domain"] = ["tgt_pc_dup10", "tgt_pc_dup10_quota10", "tgt_pc_source_only", "tgt_pc_plain", "tgt_pc_quota10", "tgt_pc_quota25", "tgt_pc_quota50", "tgt_pc_pseudo_meanstd",

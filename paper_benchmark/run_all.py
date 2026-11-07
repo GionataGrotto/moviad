@@ -127,6 +127,11 @@ PLAN: list[tuple[str, str, str, int | None]] = [
     ("tgt_pc_plain", "patchcore", "_seed2", 2),
     ("tgt_cmb_q10_aug10_mask", "patchcore", "_seed1", 1),
     ("tgt_cmb_q10_aug10_mask", "patchcore", "_seed2", 2),
+    # round 10: variations of the best configuration (smaller quotas, other BEATs blocks)
+    ("tgt_pc_quota2", "patchcore", "", None),
+    ("tgt_pc_quota5", "patchcore", "", None),
+    ("tgt_pc_quota5_b6_9_12", "patchcore", "", None),
+    ("tgt_pc_quota10_b6_9_12", "patchcore", "", None),
     # STFPM: optimiser and BEATs student
     ("baseline", "stfpm", "", None),
     ("stfpm_sgd_lr0p1", "stfpm", "", None),
@@ -144,7 +149,7 @@ EXTRA_AGGREGATIONS = ["frames10pct", "frames25pct", "frames50pct"]
 #: crash costs the least: the plan is sorted by group (stable inside a group) right after it is defined.
 _RISK_GROUPS = [
     {"tgt_pc_source_only", "tgt_pc_plain", "tgt_pc_dup10", "tgt_pc_dup10_quota10"},  # PatchCore, both domains: configuration only (+ exact copies)
-    {"tgt_pc_quota10", "tgt_pc_quota25", "tgt_pc_quota50", "tgt_pc_aug10", "tgt_pc_aug10_quota25", "tgt_pc_aug10mix_quota25"},  # new PatchCore code
+    {"tgt_pc_quota10", "tgt_pc_quota25", "tgt_pc_quota50", "tgt_pc_quota2", "tgt_pc_quota5", "tgt_pc_quota5_b6_9_12", "tgt_pc_quota10_b6_9_12", "tgt_pc_aug10", "tgt_pc_aug10_quota25", "tgt_pc_aug10mix_quota25"},  # new PatchCore code
     {"tgt_pc_pseudo_meanstd", "tgt_pc_pseudo_coral"},  # domain transfer: eigendecomposition of a 2304x2304 matrix for coral
     {"tgt_cmb_q10_aug10", "tgt_cmb_ps10_q10_aug10"},  # combinations of target options without the adapted BEATs
     {"ssl_pc_reg_near", "ssl_pc_reg_ls", "ssl_pc_reg_near_on_ls", "ssl_pc_mask_near", "ssl_pc_mask_ls", "ssl_pc_contrastive_near", "ssl_pc_contrastive_ls"},
