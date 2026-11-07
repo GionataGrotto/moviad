@@ -121,7 +121,7 @@ def run_pair(pair, args, runner=subprocess.run) -> bool:
         experiment, seed = SEEDED[pair]
     command = [sys.executable, str(HERE / "run_dcase_grid.py"), "--base-config", str(args.base_config), "--experiments", experiment,
                "--methods", method, "--run-suffix", (f"_seed{seed}" if seed is not None else "") + SUFFIX, "--epochs", str(args.epochs),
-               "--summary", str(SCRATCH)]
+               "--no-summary"]
     if seed is not None:
         command += ["--seed", str(seed)]
     for attempt in range(args.retries + 1):

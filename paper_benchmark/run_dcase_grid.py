@@ -462,6 +462,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None, help="seed of the runs (default: the runner's default)")
     parser.add_argument("--run-suffix", default="", help="appended to every run name, e.g. _seed2, so repeated runs do not overwrite each other")
     parser.add_argument("--summary", type=Path, default=None, help="default: results/paper_benchmark/grid_summary<suffix>.md")
+    parser.add_argument("--no-summary", action="store_true",
+                        help="do not write the dev summary table (the evaluation runs have unlabelled clip names the dev scorer cannot read)")
     parser.add_argument("--extra-aggregations", nargs="+", default=[],
                         help="more file scores computed from the same trained model (max, mean, top5pct, ...), "
                              "reported as extra columns method@aggregation")
@@ -505,8 +507,9 @@ def main() -> None:
         if result.returncode != 0:
             print(f"!! experiment {name} failed (exit code {result.returncode}); continuing", file=sys.stderr)
             failed.append(name)
-        write_summary(summary_path, args.experiments, columns, suffix)
-        print(f"summary updated: {summary_path}", flush=True)
+        if not args.no_summary:
+            write_summary(summary_path, args.experiments, columns, suffix)
+            print(f"summary updated: {summary_path}", flush=True)
     if failed:
         sys.exit(1)  # lets a caller (run_all.py) see that something failed
 

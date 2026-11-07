@@ -32,6 +32,7 @@ def test_pair_runner_retries_and_uses_the_eval_suffix():
     args = types.SimpleNamespace(base_config="c.json", epochs=30, retries=1, retry_wait=0)
     assert run_eval.run_pair(("baseline", "knn"), args, runner) is True and len(calls) == 2
     assert calls[0][calls[0].index("--run-suffix") + 1] == run_eval.SUFFIX
+    assert "--no-summary" in calls[0]  # the dev summary cannot read the unlabelled evaluation clip names: it must not run for these pairs
 
 
 def test_report_is_built_from_saved_scores(tmp_path):
