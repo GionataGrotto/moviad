@@ -73,6 +73,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "finetune_margin": 0.3,
     "finetune_pseudo_classes": 0,
     "patchcore_target_fraction": 0.0,
+    "patchcore_domain_calibration": False,
     "patchcore_pseudo_fraction": 0.0,
     "patchcore_domain_transfer": "meanstd",
     "patchcore_transfer_shrinkage": 0.5,
@@ -498,6 +499,7 @@ def make_model(
             pseudo_target_fraction=float(config.get("patchcore_pseudo_fraction", 0.0)),
             domain_transfer=config.get("patchcore_domain_transfer", "meanstd"),
             transfer_shrinkage=float(config.get("patchcore_transfer_shrinkage", 0.5)),
+            domain_calibration=bool(config.get("patchcore_domain_calibration", False)),
         ).to(device)
 
     if method == "knn_ft":

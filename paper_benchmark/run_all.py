@@ -132,6 +132,10 @@ PLAN: list[tuple[str, str, str, int | None]] = [
     ("tgt_pc_quota5", "patchcore", "", None),
     ("tgt_pc_quota5_b6_9_12", "patchcore", "", None),
     ("tgt_pc_quota10_b6_9_12", "patchcore", "", None),
+    # round 11: the target normals sit above the source ones (ToyDrone): the re-weighting and a per-domain calibration of the scores
+    ("tgt_pc_quota10_rw", "patchcore", "", None),
+    ("tgt_pc_quota10_dcal", "patchcore", "", None),
+    ("tgt_pc_quota25_dcal", "patchcore", "", None),
     # STFPM: optimiser and BEATs student
     ("baseline", "stfpm", "", None),
     ("stfpm_sgd_lr0p1", "stfpm", "", None),
@@ -158,6 +162,7 @@ _RISK_GROUPS = [
     {"tgt_cmb_q10_mask", "tgt_cmb_aug10_mask", "tgt_cmb_q10_aug10_mask", "tgt_cmb_ps10_q10_aug10_mask"},  # these use the shared mask adapter
     {"knn_ft_ls_both", "knn_ls_both", "cfa_b12_ls_both"},  # to be fused with PatchCore: CFA is the unstable one
     {"dino_beats_ls_ssl", "dino_beats_ls_ssl_tw", "dino_beats_ls_mask", "dino_beats_ls_mask_tw"},  # two risky things together
+    {"tgt_pc_quota10_rw", "tgt_pc_quota10_dcal", "tgt_pc_quota25_dcal"},  # new PatchCore code (the domain calibration)
     {"stfpm_beats_late_adamw_1e5", "stfpm_beats_b12_adamw_1e5"},  # failed on 3 of 7 machines before
 ]
 

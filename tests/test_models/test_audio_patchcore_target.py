@@ -126,3 +126,39 @@ def test_a_quota_the_target_clips_cannot_fill_goes_back_to_the_source(band_banks
     assert model.memory_bank.shape[0] == 64
     target_patches = FRAMES * BANDS  # one clip
     assert (model.memory_bank.mean(dim=1) > 2.5).sum().item() == target_patches  # all of them, and no more than exist
+
+
+def calibration_kwargs(**more):
+    return dict(band_banks=True, score_standardization="band", holdout_fraction=0.25, memory_bank_size=64, target_bank_fraction=0.5, **more)
+
+
+def test_domain_calibration_needs_its_prerequisites():
+    for bad in (dict(band_banks=False), dict(score_standardization="none"), dict(target_bank_fraction=0.0)):
+        kwargs = {**calibration_kwargs(), **bad}
+        with pytest.raises(ValueError, match="domain_calibration"):
+            make_model(domain_calibration=True, **kwargs)
+
+
+def test_domain_calibration_keeps_the_two_parts_and_the_statistics_of_both_domains():
+    model = make_model(domain_calibration=True, **calibration_kwargs())
+    model.fit(clips(40, 0.0, 0), target_dataloader=clips(8, 5.0, 1))
+    assert model.band_source_sizes.shape == (BANDS,) and (model.band_source_sizes < model.band_bank_sizes).all()
+    assert model.target_score_mean.shape == (BANDS,) and (model.target_score_std > 0).all()
+    offsets = model._band_offsets()
+    for band in range(BANDS):  # the part after the source rows holds the target patches
+        part = model.memory_bank[offsets[band] + int(model.band_source_sizes[band]) : offsets[band + 1]]
+        assert part.shape[0] > 0 and part.mean() > 2.5
+        assert model.memory_bank[offsets[band] : offsets[band] + int(model.band_source_sizes[band])].mean() < 2.5
+
+
+def test_domain_calibration_puts_normal_clips_of_both_domains_on_one_scale():
+    model = make_model(domain_calibration=True, **calibration_kwargs())
+    model.fit(clips(40, 0.0, 0), target_dataloader=clips(8, 5.0, 1))
+    model.eval()
+
+    def score(offset, seed):
+        return model(next(iter(clips(4, offset, seed))))[1].abs().mean().item()  # (anomaly maps, clip scores, temporal)
+
+    source, target, anomaly = score(0.0, 5), score(5.0, 6), score(-8.0, 7)
+    assert anomaly > 5 * max(source, target, 1.0)  # a clip that is neither domain stands out, whatever the domain
+    assert abs(source - target) < 0.5 * anomaly  # and the two normal domains are close to each other

@@ -56,6 +56,7 @@ class PatchCore(AudioVADModel):
         pseudo_target_fraction: float = 0.0,
         domain_transfer: str = "meanstd",
         transfer_shrinkage: float = 0.5,
+        domain_calibration: bool = False,
     ) -> None:
         """
         Args:
@@ -82,6 +83,12 @@ class PatchCore(AudioVADModel):
                 patches (``domain_transfer``: ``"meanstd"`` or ``"coral"``, ``transfer_shrinkage`` for the covariance).
             patch_reweighting: apply the PatchCore re-weighting (paper, section 3.3) to every patch score, so that the
                 anomaly map, and any score built from it, is re-weighted and not only the single score of the worst patch.
+            domain_calibration: score every patch against the source part and against the target part of the bank
+                separately, standardise each distance with the statistics of normal clips of its own domain (held-out source
+                clips; the target clips one at a time, against a bank of the others) and keep the smaller of the two. A target
+                normal patch has few neighbours in the sparse target part, so its raw distance is larger than that of a source
+                patch: the calibration removes that offset using training clips only, and every test clip is still scored alone.
+                Needs ``band_banks``, ``score_standardization="band"`` and ``target_bank_fraction > 0``.
         """
         super().__init__(
             feature_extractor=feature_extractor,
@@ -107,6 +114,13 @@ class PatchCore(AudioVADModel):
             raise ValueError("target_bank_fraction and pseudo_target_fraction must be >= 0 and sum to less than 1")
         self.target_bank_fraction, self.pseudo_target_fraction = target_bank_fraction, pseudo_target_fraction
         self.domain_transfer, self.transfer_shrinkage = domain_transfer, transfer_shrinkage
+        if domain_calibration and not (band_banks and score_standardization == "band" and target_bank_fraction > 0):
+            raise ValueError("domain_calibration needs band_banks, score_standardization='band' and target_bank_fraction > 0")
+        self.domain_calibration = domain_calibration
+        # per band: how many bank rows are source patches (the target patches follow them); statistics of the target scores
+        self.register_buffer("band_source_sizes", torch.zeros(0, dtype=torch.long))
+        self.register_buffer("target_score_mean", Tensor())
+        self.register_buffer("target_score_std", Tensor())
         self.register_buffer("memory_bank", Tensor())
         self.register_buffer("feature_mean", Tensor())
         self.register_buffer("feature_std", Tensor())
@@ -197,6 +211,7 @@ class PatchCore(AudioVADModel):
             if coresets is None:
                 raise RuntimeError("Cannot build a memory bank from an empty dataset")
             banks = [coreset.result(selection_device) for coreset in coresets]
+            self.band_source_sizes = torch.tensor([bank.shape[0] for bank in banks], dtype=torch.long)
             if use_target:
                 extra = self._target_banks(target_chunks, banks, target_per_bank, pseudo_per_bank, selection_device, seed)
                 banks = [torch.cat([bank, *parts]) for bank, parts in zip(banks, extra)]
@@ -211,17 +226,49 @@ class PatchCore(AudioVADModel):
             self.memory_bank = bank.to(self.device)
 
         if standardize_scores:
-            self._fit_score_statistics(held_out)
+            self._fit_score_statistics(held_out, part="source" if self.domain_calibration else None)
         else:
             self.score_mean, self.score_std = Tensor(), Tensor()
+        if self.domain_calibration:
+            if int((self.band_bank_sizes - self.band_source_sizes).min()) < 1:
+                raise RuntimeError("domain_calibration needs target patches in the bank of every band")
+            self._fit_target_statistics(target_chunks, target_per_bank, seed)
+        else:
+            self.band_source_sizes = torch.zeros(0, dtype=torch.long)
+            self.target_score_mean, self.target_score_std = Tensor(), Tensor()
+
+    @torch.no_grad()
+    def _fit_target_statistics(self, target_chunks: list[Tensor], quota: int, seed: int) -> None:
+        """Per-band mean / std of the patch scores of target clips scored one at a time against a bank made of the others.
+
+        The target patches of a test clip are never in the bank, so their scores have to be estimated on clips that are not in
+        it either: leave one target clip out, reduce the others as the real target part is reduced, score the clip against them.
+        """
+        rows = self._target_clip_rows
+        if len(rows) < 2:
+            raise ValueError("domain_calibration needs at least two target clips")
+        clip_of_row = torch.repeat_interleave(torch.arange(len(rows)), torch.tensor(rows))
+        statistics = BandScoreStats()
+        for clip in range(len(rows)):
+            inside = clip_of_row == clip
+            scores = torch.zeros(1, int(inside.sum()), len(target_chunks))
+            for band, chunk in enumerate(target_chunks):
+                others = reduce_to(chunk[~inside].to(self.device), quota, seed + band)
+                distance, _ = self._search(chunk[inside].to(self.device), others, 1)
+                scores[0, :, band] = distance.cpu()
+            statistics.update(scores)
+        mean, std = statistics.finalize()
+        self.target_score_mean, self.target_score_std = mean.to(self.device), std.to(self.device)
 
     @torch.no_grad()
     def _collect_target_patches(self, target_dataloader) -> list[Tensor]:
         """All the patches of the target clips, on the CPU: one ``(patches, channels)`` tensor per band (per bank), or a single one."""
         per_band: list[list[Tensor]] | None = None
+        self._target_clip_rows: list[int] = []  # patches per band of every clip, in the order of the rows
         for batch in target_dataloader:
             embedding_map = self.embed(self.batch_input(batch)).detach()
-            _, channels, _, width = embedding_map.shape
+            _, channels, frames, width = embedding_map.shape
+            self._target_clip_rows += [frames] * embedding_map.shape[0]
             if self.band_banks:
                 patches = [embedding_map[:, :, :, band].permute(0, 2, 1).reshape(-1, channels) for band in range(width)]
             else:
@@ -250,11 +297,11 @@ class PatchCore(AudioVADModel):
         return result
 
     @torch.no_grad()
-    def _fit_score_statistics(self, held_out: list[Tensor]) -> None:
-        """Per-band mean / std of the patch scores of normal clips that are not in the memory bank."""
+    def _fit_score_statistics(self, held_out: list[Tensor], part: str | None = None) -> None:
+        """Per-band mean / std of the patch scores of normal clips that are not in the memory bank (``part``: see ``_patch_scores``)."""
         statistics = BandScoreStats()
         for embedding_map in held_out:
-            scores, _ = self._patch_scores(embedding_map.to(self.device))
+            scores, _ = self._patch_scores(embedding_map.to(self.device), part)
             statistics.update(scores)
         mean, std = statistics.finalize()
         self.score_mean, self.score_std = mean.to(self.device), std.to(self.device)
@@ -309,9 +356,18 @@ class PatchCore(AudioVADModel):
             raise RuntimeError("The memory bank is empty: fit the model before evaluating it")
         self.memory_bank = self.memory_bank.to(self.device)
 
-        scores, locations = self._patch_scores(embedding_map)  # (B, H, W)
-        if self.score_mean.numel():
-            scores = standardize_by_band(scores, self.score_mean, self.score_std)
+        if self.domain_calibration:
+            source_scores, source_locations = self._patch_scores(embedding_map, "source")
+            target_scores, target_locations = self._patch_scores(embedding_map, "target")
+            source_scores = standardize_by_band(source_scores, self.score_mean, self.score_std)
+            target_scores = standardize_by_band(target_scores, self.target_score_mean, self.target_score_std)
+            in_target = target_scores < source_scores  # a patch is as anomalous as it is for the domain it resembles most
+            scores = torch.where(in_target, target_scores, source_scores)
+            locations = torch.where(in_target, target_locations, source_locations)
+        else:
+            scores, locations = self._patch_scores(embedding_map)  # (B, H, W)
+            if self.score_mean.numel():
+                scores = standardize_by_band(scores, self.score_mean, self.score_std)
         if self.patch_reweighting:
             scores = scores * self._patch_weights(embedding, locations.reshape(-1), width).reshape(scores.shape)
         patch_scores = scores.reshape(batch_size, -1)
@@ -344,8 +400,11 @@ class PatchCore(AudioVADModel):
         sizes = self.band_bank_sizes.tolist()
         return [sum(sizes[:band]) for band in range(len(sizes) + 1)]
 
-    def _patch_scores(self, embedding_map: Tensor) -> tuple[Tensor, Tensor]:
-        """Distance of every patch to its nearest memory-bank patch and the bank index, both ``(B, H, W)``."""
+    def _patch_scores(self, embedding_map: Tensor, part: str | None = None) -> tuple[Tensor, Tensor]:
+        """Distance of every patch to its nearest memory-bank patch and the bank index, both ``(B, H, W)``.
+
+        ``part="source"`` / ``"target"`` searches only the source / target rows of every band's bank (``domain_calibration``).
+        """
         batch_size, channels, height, width = embedding_map.shape
         if self.band_bank_sizes.numel() == 0:
             scores, locations = self.nearest_neighbors(self.reshape_embedding(embedding_map), n_neighbors=1)
@@ -361,10 +420,15 @@ class PatchCore(AudioVADModel):
         locations = torch.empty(batch_size, height, width, dtype=torch.long, device=embedding_map.device)
         for band in range(width):
             queries = embedding_map[:, :, :, band].permute(0, 2, 1).reshape(-1, channels)
-            bank = self.memory_bank[offsets[band] : offsets[band + 1]]
+            start, stop = offsets[band], offsets[band + 1]
+            if part == "source":
+                stop = start + int(self.band_source_sizes[band])
+            elif part == "target":
+                start = start + int(self.band_source_sizes[band])
+            bank = self.memory_bank[start:stop]
             band_scores, band_locations = self._search(queries, bank, 1)
             scores[:, :, band] = band_scores.reshape(batch_size, height)
-            locations[:, :, band] = (band_locations + offsets[band]).reshape(batch_size, height)
+            locations[:, :, band] = (band_locations + start).reshape(batch_size, height)
         return scores, locations
 
     @staticmethod
@@ -457,9 +521,10 @@ class PatchCore(AudioVADModel):
         return weights * score
 
     # ---------------------------------------------------------- persistence
-    _SIZED_BUFFERS = ("memory_bank", "feature_mean", "feature_std", "band_bank_sizes", "score_mean", "score_std")
+    _SIZED_BUFFERS = ("memory_bank", "feature_mean", "feature_std", "band_bank_sizes", "score_mean", "score_std",
+                      "band_source_sizes", "target_score_mean", "target_score_std")
     #: buffers that older checkpoints do not have
-    _OPTIONAL_BUFFERS = ("band_bank_sizes", "score_mean", "score_std")
+    _OPTIONAL_BUFFERS = ("band_bank_sizes", "score_mean", "score_std", "band_source_sizes", "target_score_mean", "target_score_std")
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
         # The buffers are registered empty; a fitted checkpoint has other shapes.
@@ -486,6 +551,8 @@ class PatchCore(AudioVADModel):
         self.memory_bank = Tensor()
         self.band_bank_sizes = torch.zeros(0, dtype=torch.long)
         self.score_mean, self.score_std = Tensor(), Tensor()
+        self.band_source_sizes = torch.zeros(0, dtype=torch.long)
+        self.target_score_mean, self.target_score_std = Tensor(), Tensor()
 
     def get_model_size_and_macs(self):
         from moviad.utilities.get_sizes import (

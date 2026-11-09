@@ -327,6 +327,12 @@ _define("cfa_b12_ls_both", "CFA on BEATs block 12 + LS, + 10 target clips, teste
 for _share in (2, 5):
     _define(f"tgt_pc_quota{_share}", f"PatchCore LS, {_share}% of the bank reserved for the target patches",
             _patchcore(patchcore_target_fraction=_share / 100, dcase=_LS), {"patchcore"})
+# the target normals score higher than the source ones (the target part of the bank is sparse): two remedies for the official score
+_define("tgt_pc_quota10_rw", "PatchCore LS, 10% target quota + PatchCore re-weighting of every patch",
+        _patchcore(patchcore_target_fraction=0.10, patchcore_reweighting=True, dcase=_LS), {"patchcore"})
+for _share in (10, 25):
+    _define(f"tgt_pc_quota{_share}_dcal", f"PatchCore LS, {_share}% target quota, scores calibrated per domain (source part / target part of the bank)",
+            _patchcore(patchcore_target_fraction=_share / 100, patchcore_domain_calibration=True, dcase=_LS), {"patchcore"})
 for _share in (5, 10):
     _define(f"tgt_pc_quota{_share}_b6_9_12", f"PatchCore LS on BEATs blocks 6,9,12, {_share}% of the bank reserved for the target patches",
             _patchcore(layers=[6, 9, 12], patchcore_target_fraction=_share / 100, dcase=_LS), {"patchcore"})
