@@ -125,6 +125,8 @@ class BEATsFeatureExtractor(nn.Module):
 
     def forward(self, waveforms: torch.Tensor) -> list[torch.Tensor]:
         waveforms = waveforms.to(self.device)
+        if waveforms.dim() == 3 and waveforms.shape[1] == 1:  # [B, 1, T] -> [B, T]: some datasets keep the channel axis
+            waveforms = waveforms.squeeze(1)
         padding_mask = torch.zeros_like(waveforms, dtype=torch.bool)
         self._captured.clear()
         with torch.no_grad() if self.frozen else nullcontext():
@@ -140,3 +142,32 @@ class BEATsFeatureExtractor(nn.Module):
             maps.append(tokens.permute(1, 2, 0).reshape(batch, dim, count // freq_patches, freq_patches))
         self.spec_shape = torch.Size([waveforms.shape[0], 1, *self.fbank_shape(waveforms.shape[-1])])
         return maps
+
+
+class BEATsFbank(nn.Module):
+    """Waveform -> the Kaldi filterbank BEATs computes, in the layout of the Cnn14 log-mel transform.
+
+    Input ``[B, T]`` (or ``[T]``) at 16 kHz, output ``[B, 1, frames, 128]``: the time x frequency map the BEATs anomaly maps are
+    reported at (``BEATsFeatureExtractor.fbank_shape``). The datasets that need a spectrogram next to the waveform (the ground-truth
+    masks of EnvMix, the mask size of MIMII) use it in place of the Cnn14 transform; it has the ``hop_length`` they read.
+    """
+
+    hop_length = BEATsFeatureExtractor.FRAME_SHIFT
+    win_length = BEATsFeatureExtractor.FRAME_LENGTH
+
+    def forward(self, waveforms: torch.Tensor) -> torch.Tensor:
+        from torchaudio.compliance import kaldi
+
+        if waveforms.dim() == 1:
+            waveforms = waveforms.unsqueeze(0)
+        maps = [
+            kaldi.fbank(
+                wave.unsqueeze(0).float() * 2**15,
+                num_mel_bins=BEATsFeatureExtractor.MEL_BINS,
+                sample_frequency=BEATsFeatureExtractor.sample_rate,
+                frame_length=25,
+                frame_shift=10,
+            )
+            for wave in waveforms
+        ]
+        return torch.stack(maps).unsqueeze(1)

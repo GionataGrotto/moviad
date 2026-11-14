@@ -11,6 +11,8 @@ from torch.utils.data import DataLoader
 from benchmark_common import (
     append_csv,
     check_audio_checkpoint,
+    completed_runs,
+    run_key,
     evaluate_model,
     expand_path,
     fit_model,
@@ -46,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true", help="Run a tiny subset.")
     parser.add_argument("--methods", nargs="+", help="Override config methods.")
     parser.add_argument("--streaming", action="store_true", help="Fit PatchCore/PaDiM with bounded-memory streaming updates.")
+    parser.add_argument("--skip-done", action="store_true", help="skip the runs already in the results CSV (same variant, method, background, snr, seed)")
     parser.add_argument(
         "--subset",
         nargs="?",
@@ -177,6 +180,7 @@ def run_one(
 
     return {
         "dataset": "envmix",
+        "variant": config.get("variant", ""),
         "method": method,
         "backbone": config["backbone"],
         "layers": "|".join(config["layers"]),
@@ -220,10 +224,17 @@ def main() -> None:
 
     result_path = output_dir(config) / "envmix_results.csv"
     print(f"Writing EnvMix results to {result_path}")
+    run_keys = ("variant", "method", "background_category", "snr_db", "seed")
+    done = completed_runs(result_path, run_keys) if args.skip_done else set()
     for method in methods:
         for background_category in backgrounds:
             for snr_db in snrs:
                 for seed in seeds:
+                    wanted = run_key({"variant": config.get("variant", ""), "method": method, "background_category": background_category,
+                                      "snr_db": float(snr_db), "seed": int(seed)}, run_keys)
+                    if wanted in done:
+                        print(f"[EnvMix] skip (done) {wanted}")
+                        continue
                     print(f"[EnvMix] method={method} background={background_category} snr_db={snr_db} seed={seed}")
                     row = run_one(
                         method,

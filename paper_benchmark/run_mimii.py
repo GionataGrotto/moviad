@@ -12,6 +12,8 @@ from moviad.datasets.subset import training_subset
 from benchmark_common import (
     append_csv,
     check_audio_checkpoint,
+    completed_runs,
+    run_key,
     evaluate_model,
     expand_path,
     fit_model,
@@ -33,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true", help="Run a tiny subset.")
     parser.add_argument("--methods", nargs="+", help="Override config methods.")
     parser.add_argument("--streaming", action="store_true", help="Fit PatchCore/PaDiM with bounded-memory streaming updates.")
+    parser.add_argument("--skip-done", action="store_true", help="skip the runs already in the results CSV (same variant, method, snr, category, id, seed)")
     parser.add_argument(
         "--subset",
         nargs="?",
@@ -155,6 +158,7 @@ def run_one(
 
     return {
         "dataset": "mimii",
+        "variant": config.get("variant", ""),
         "method": method,
         "backbone": config["backbone"],
         "layers": "|".join(config["layers"]),
@@ -196,6 +200,8 @@ def main() -> None:
         seeds = seeds[:1]
 
     print(f"Writing MIMII results to {result_path}")
+    run_keys = ("variant", "method", "snr", "category", "machine_id", "seed")
+    done = completed_runs(result_path, run_keys) if args.skip_done else set()
     for method in methods:
         for snr in snrs:
             for category in categories:
@@ -206,6 +212,11 @@ def main() -> None:
                     ids = ids[:1]
                 for seed in seeds:
                     for machine_id in ids:
+                        wanted = run_key({"variant": config.get("variant", ""), "method": method, "snr": snr, "category": category,
+                                          "machine_id": machine_id, "seed": seed}, run_keys)
+                        if wanted in done:
+                            print(f"[MIMII] skip (done) {wanted}")
+                            continue
                         print(f"[MIMII] method={method} snr={snr} category={category} machine={machine_id} seed={seed}")
                         row = run_one(
                             method,

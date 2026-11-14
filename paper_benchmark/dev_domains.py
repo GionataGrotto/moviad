@@ -54,14 +54,25 @@ def dev_domain_metrics(folder: Path) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("runs", nargs="+", help="folder or name=folder")
+    parser.add_argument("--machines", action="store_true", help="also print the evaluator's AUC (source, target) and the pAUC of every machine")
     args = parser.parse_args()
+    detail = []
     print(f"{'run':44s} source  target  pAUC   official  machines")
     for item in args.runs:
         name, sep, folder = item.partition("=")
         metrics = dev_domain_metrics(Path(folder if sep else item).expanduser())
         mean = lambda d: f"{np.mean(list(d.values())):.3f}" if d else "  -  "  # noqa: E731
         official = "   -  " if metrics["official"] is None else f"{metrics['official']:6.1f}"
-        print(f"{(name if sep else Path(item).name):44s} {mean(metrics['source'])}   {mean(metrics['target'])}   {mean(metrics['pauc'])}  {official}    {len(metrics['source'])}")
+        label = name if sep else Path(item).name
+        print(f"{label:44s} {mean(metrics['source'])}   {mean(metrics['target'])}   {mean(metrics['pauc'])}  {official}    {len(metrics['source'])}")
+        for machine, (source_auc, target_auc) in official_style_aucs(Path(folder if sep else item).expanduser()).items():
+            if source_auc is not None and target_auc is not None:
+                detail.append(f"| {label} | {machine} | {source_auc * 100:.2f} | {target_auc * 100:.2f} | {metrics['pauc'].get(machine, float('nan')) * 100:.2f} |")
+    if args.machines:
+        print()
+        print("| Run | Machine | AUC source | AUC target | pAUC |")
+        print("|---|---|---|---|---|")
+        print(chr(10).join(detail))
 
 
 if __name__ == "__main__":

@@ -252,6 +252,10 @@ def limited(iterable: Iterable[Any], debug: bool, max_batches: int) -> Iterable[
 def audio_sample_rate(config: dict[str, Any]) -> int:
     from moviad.utilities.audio.audio_feature_extractor import AudioFeatureExtractor
 
+    if config.get("backbone") == "BEATs":
+        from moviad.utilities.audio.beats_feature_extractor import BEATsFeatureExtractor
+
+        return BEATsFeatureExtractor.sample_rate
     return AudioFeatureExtractor.sample_rate_for(config.get("backbone", "Cnn14"))
 
 
@@ -270,6 +274,18 @@ def append_csv(path: Path, row: dict[str, Any]) -> None:
         if write_header:
             writer.writeheader()
         writer.writerow(row)
+
+
+def completed_runs(path: Path, keys: tuple[str, ...]) -> set[tuple[str, ...]]:
+    """The ``keys`` columns of every row already in a results CSV (as strings): what ``--skip-done`` skips on a restart."""
+    if not path.exists():
+        return set()
+    with path.open("r", newline="", encoding="utf-8") as fh:
+        return {tuple(str(row.get(key, "")) for key in keys) for row in csv.DictReader(fh)}
+
+
+def run_key(row_like: dict[str, Any], keys: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(str(row_like.get(key, "")) for key in keys)
 
 
 #: Methods whose features come from the CLAP-pretrained audio backbone.
@@ -376,8 +392,13 @@ def make_wave_to_spectrogram(config: dict[str, Any], device: torch.device, metho
     """Return the waveform -> log-mel transform expected by ``method``.
 
     Spectrogram-only methods must not instantiate the pretrained backbone: it
-    would needlessly require the CLAP checkpoint just to reach its frontend.
+    would needlessly require the CLAP checkpoint just to reach its frontend. With BEATs it is the Kaldi filterbank of BEATs
+    (``BEATsFbank``): the time x frequency map the anomaly maps are reported at.
     """
+    if config.get("backbone") == "BEATs":
+        from moviad.utilities.audio.beats_feature_extractor import BEATsFbank
+
+        return BEATsFbank()
     if method.lower() in SPECTROGRAM_ONLY_METHODS:
         return make_spectrogram_transform(config)
     return make_feature_extractor(config, device, frozen=True).spectro_transform
