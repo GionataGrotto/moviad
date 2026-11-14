@@ -161,7 +161,7 @@ def run_one(
         "variant": config.get("variant", ""),
         "method": method,
         "backbone": config["backbone"],
-        "layers": "|".join(config["layers"]),
+        "layers": "|".join(str(layer) for layer in config["layers"]),
         "pretrained": bool(config.get("pretrained", True)),
         "snr": snr,
         "category": category,

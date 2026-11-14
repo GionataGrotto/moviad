@@ -70,3 +70,14 @@ def test_envmix_temporal_metrics_of_rows_with_shifted_columns_are_not_averaged()
     cfa = [line for line in text.splitlines() if "CFA [Cnn14" in line][0]
     assert patch.split("|")[-4].strip() == "-" and patch.split("|")[-3].strip() == "-"  # temporal F1 / ROC missing, not -10 and 6
     assert "60.0" in cfa and "70.0" in cfa
+
+
+def test_debug_holds_out_every_other_batch_for_the_score_statistics():
+    assert "score_std_holdout" not in driver.build_config(BASE, "mimii", "patchcore_beats_std", "o", [42], [0])
+    assert driver.build_config(BASE, "mimii", "patchcore_beats_std", "o", [42], [0], debug=True)["score_std_holdout"] == 0.5
+
+
+def test_the_runners_join_numeric_beats_layers_into_the_csv_row():
+    for name in ("run_mimii.py", "run_envmix.py"):
+        source = (Path(__file__).resolve().parents[1] / "paper_benchmark" / name).read_text(encoding="utf-8")
+        assert 'str(layer) for layer in config["layers"]' in source  # BEATs layers are ints: "|".join(ints) raises a TypeError

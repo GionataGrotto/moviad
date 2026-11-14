@@ -48,11 +48,13 @@ def deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
-def build_config(base: dict, dataset: str, variant: str, output_dir: str, mimii_seeds: list[int], envmix_seeds: list[int]) -> dict:
+def build_config(base: dict, dataset: str, variant: str, output_dir: str, mimii_seeds: list[int], envmix_seeds: list[int], debug: bool = False) -> dict:
     """The config of one (dataset, variant): BEATs, its own output folder, no faithfulness (it needs the Cnn14 frontend)."""
     method, overrides = VARIANTS[variant]
     config = deep_merge(base, overrides)
     config.update({"variant": variant, "output_dir": output_dir, "methods": [method], "faithfulness": {"enabled": False}})
+    if debug:  # two training batches only: every other one is held out for the score statistics (the default is one in ten)
+        config["score_std_holdout"] = 0.5
     if "mimii" in config:
         config["mimii"] = {**config["mimii"], "seeds": mimii_seeds}
     if "envmix" in config:
@@ -100,7 +102,7 @@ def main() -> None:
     failed = []
     for index, (dataset, variant) in enumerate(entries, 1):
         print(f"\n===== {index}/{len(entries)}: {dataset}:{variant}", flush=True)
-        config = build_config(base, dataset, variant, output_dir, args.mimii_seeds, args.envmix_seeds)
+        config = build_config(base, dataset, variant, output_dir, args.mimii_seeds, args.envmix_seeds, debug=args.debug)
         path = config_dir / f"config.beats_{dataset}_{variant}.json"
         path.write_text(json.dumps(config, indent=2), encoding="utf-8")
         method = VARIANTS[variant][0]
