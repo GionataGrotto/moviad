@@ -36,3 +36,32 @@ def test_the_extractor_accepts_a_waveform_with_a_channel_axis(tmp_path):
     import inspect
 
     assert "waveforms.squeeze(1)" in inspect.getsource(BEATsFeatureExtractor.forward)
+
+
+class _Clips(torch.utils.data.Dataset):
+    """Background clips ``(waveform, sample_rate)`` and, with ``categories``, anomaly clips ``(waveform, sample_rate, category)``."""
+
+    def __init__(self, n, rate, categories=False):
+        self.n, self.rate, self.categories = n, rate, categories
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, idx):
+        return (torch.randn(self.rate * 2) * 0.1, self.rate)
+
+    def get_with_category(self, idx):
+        return torch.randn(self.rate // 2) * 0.1, self.rate, "dog"
+
+
+def test_the_envmix_test_clips_follow_the_sample_rate_and_the_spectrogram_of_the_backbone():
+    """With BEATs the test clips were made at 44.1 kHz and their masks had the Cnn14 shape, so the batches could not be stacked."""
+    from moviad.datasets.audio_dataset import AudioAnomalyDataset
+
+    beats = AudioAnomalyDataset(_Clips(6, 16000), _Clips(3, 16000), SNR_dB_distribution=lambda: 0.0, clip_duration=2.0, random_state=0,
+                                target_sample_rate=16000, spectro_transform=BEATsFbank())
+    assert beats.img_shape == BEATsFeatureExtractor.fbank_shape(32000)
+    assert all(sample.audio_clip.shape[0] == 32000 for sample in beats.dataset)  # 16 kHz, not 44.1 kHz
+
+    default = AudioAnomalyDataset(_Clips(6, 44100), _Clips(3, 44100), SNR_dB_distribution=lambda: 0.0, clip_duration=2.0, random_state=0)
+    assert default.img_shape[1] == 64 and default.dataset[0].audio_clip.shape[0] == 88200  # the Cnn14 path is unchanged

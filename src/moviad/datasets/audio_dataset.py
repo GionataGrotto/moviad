@@ -390,14 +390,20 @@ class AudioAnomalyDataset(Dataset):
         clip_duration=4.0,
         random_state=None,
         target_sample_rate=44100,  # Hz
+        spectro_transform=None,
     ):
-        from moviad.utilities.audio.audio_feature_extractor import (
-            AudioFeatureExtractor,
-        )
+        """``spectro_transform``: waveform -> time x frequency map, used for the shape of the anomaly maps (default: the Cnn14 log-mel).
 
-        _, _, spectro_transform = AudioFeatureExtractor._load_spectrogram_transform(
-            "Cnn14"
-        )
+        The clips are resampled to ``target_sample_rate``: with a backbone that wants another rate (BEATs: 16 kHz) pass both.
+        """
+        if spectro_transform is None:
+            from moviad.utilities.audio.audio_feature_extractor import (
+                AudioFeatureExtractor,
+            )
+
+            _, _, spectro_transform = AudioFeatureExtractor._load_spectrogram_transform(
+                "Cnn14"
+            )
 
         np.random.seed(random_state) if random_state else None
 
@@ -673,11 +679,14 @@ def generate_urban_esc_V1(
         generator=torch.Generator().manual_seed(seed),
     )
 
+    # the test clips are made at the sample rate of the backbone and their anomaly maps have the shape of its spectrogram
     test_dataset = AudioAnomalyDataset(
         test_bg_ds,
         anomaly_ds,
         random_state=seed,
         SNR_dB_distribution=lambda: SNR_dB,
+        target_sample_rate=target_sample_rate,
+        spectro_transform=wav_to_spectro,
     )  # contamination
 
     test_dataset_ff = AudioAnomalyDatasetFF(
@@ -685,6 +694,8 @@ def generate_urban_esc_V1(
         anomaly_ds,
         random_state=seed,
         SNR_dB_distribution=lambda: SNR_dB,
+        target_sample_rate=target_sample_rate,
+        spectro_transform=wav_to_spectro,
     )  # contamination
 
     train_dataset = RetrofitTrainDs(train_dataset, test_dataset.global_max, test_dataset.noise_factor)
