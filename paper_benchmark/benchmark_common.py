@@ -73,6 +73,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "finetune_margin": 0.3,
     "finetune_pseudo_classes": 0,
     "patchcore_target_fraction": 0.0,
+    "patchcore_memory_fraction": None,  # e.g. 0.01: the memory holds that share of the training patches (default: memory_bank_size patches)
     "patchcore_domain_calibration": False,
     "patchcore_pseudo_fraction": 0.0,
     "patchcore_domain_transfer": "meanstd",
@@ -708,6 +709,22 @@ def attach_spectrogram_preprocessing(method: str, model, train_loader, config: d
         consumer.set_spectrogram_preprocessor(preprocessor)
 
 
+def patchcore_bank_size(model, train_loader, fraction: float) -> int:
+    """The memory size that is ``fraction`` of all the patches of the training set (the original PatchCore keeps 1%).
+
+    ``memory_bank_size`` is otherwise a fixed number of patches: with the same number the share of the training patches that the memory
+    holds depends on the length and the number of the clips. The patches of a clip are those of the feature map of one batch.
+    """
+    if not 0 < fraction <= 1:
+        raise ValueError(f"patchcore_memory_fraction must be in (0, 1], got {fraction}")
+    batch = next(iter(train_loader))
+    with torch.no_grad():
+        embedding = model.embed(model.batch_input(batch))
+    patches_per_clip = embedding.shape[2] * embedding.shape[3]
+    bands = embedding.shape[3]
+    return max(int(len(train_loader.dataset) * patches_per_clip * fraction), 4 * bands)  # at least a few patches in every band's bank
+
+
 def fit_model(method: str, model, train_loader, test_loader, config: dict[str, Any], device: torch.device, debug: bool, evaluate_during_training: bool = True) -> None:
     method = method.lower()
     max_batches = int(config.get("debug_max_batches", 2))
@@ -717,6 +734,9 @@ def fit_model(method: str, model, train_loader, test_loader, config: dict[str, A
     if method == "patchcore":
         from moviad.trainers.audio.trainer_patchcore import TrainerPatchCore
 
+        if config.get("patchcore_memory_fraction"):
+            model.memory_bank_size = patchcore_bank_size(model, train_loader, float(config["patchcore_memory_fraction"]))
+            print(f"PatchCore memory: {model.memory_bank_size} patches ({100 * float(config['patchcore_memory_fraction']):g}% of the training patches)", flush=True)
         model.train()
         trainer = TrainerPatchCore(
             model,

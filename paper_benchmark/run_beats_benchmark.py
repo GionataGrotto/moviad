@@ -32,6 +32,8 @@ BEATS_LATE = {"backbone": "BEATs", "layers": [8, 10, 12]}
 #: variant -> (method, config overrides). The cheapest and safest first: a crash costs the least.
 VARIANTS = {
     "patchcore_beats_std": ("patchcore", {**BEATS_LATE, "patchcore_band_banks": True, "patchcore_score_std": "band"}),
+    # the same PatchCore with a memory of 1% of the training patches, as in the original PatchCore (instead of 30000 patches)
+    "patchcore_beats_std_1pct": ("patchcore", {**BEATS_LATE, "patchcore_band_banks": True, "patchcore_score_std": "band", "patchcore_memory_fraction": 0.01}),
     "padim_beats": ("padim", {**BEATS_LATE, "padim_diag_cov": False}),
     "dinomaly_beats": ("dinomaly", {"backbone": "BEATs", "layers": [3, 4, 5, 6, 7, 8, 9, 10], "epochs": 12}),
     "cfa_beats": ("cfa", {"backbone": "BEATs", "layers": [12], "epochs": 30}),

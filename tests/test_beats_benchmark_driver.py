@@ -43,33 +43,15 @@ def test_skip_done_reads_the_keys_of_the_rows_already_written(tmp_path):
     assert completed_runs(tmp_path / "missing.csv", keys) == set()
 
 
-def test_the_tables_hold_the_paper_rows_ours_and_bold_the_best(tmp_path):
-    def write(path, rows):
-        with path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
-            writer.writeheader()
-            writer.writerows(rows)
-
-    mimii_old = [{"method": "patchcore", "category": c, "img_roc_auc": 0.7, "f1_img": 0.7} for c in tables.CATEGORIES]
+def test_the_tables_hold_the_paper_rows_and_ours_and_bold_the_best():
     mimii_new = [{"variant": "patchcore_beats_std", "method": "patchcore", "category": c, "img_roc_auc": 0.95, "f1_img": 0.9} for c in tables.CATEGORIES]
-    text = tables.mimii_table(mimii_old, mimii_new)
-    assert "PatchCore [paper]" in text and "PatchCore [Cnn14, our rerun]" in text and "[BEATs]" in text
+    text = tables.mimii_table(mimii_new)
+    assert "PatchCore [paper]" in text and "[BEATs]" in text and "Cnn14" not in text and "rerun" not in text
     new_line = [line for line in text.splitlines() if "BEATs" in line][0]
     assert "**95.0**" in new_line and "**90.0**" in new_line  # best of its columns
     envmix_new = [{"variant": "padim_beats", "method": "padim", **{column: 0.5 for _, column in tables.ENVMIX_COLUMNS}}]
-    assert "PaDiM, BEATs [BEATs]" in tables.envmix_table([], envmix_new)
-
-
-def test_envmix_temporal_metrics_of_rows_with_shifted_columns_are_not_averaged():
-    def row(method, f1_tmp, tmp_auc):
-        base = {column: 0.5 for _, column in tables.ENVMIX_COLUMNS}
-        return {**base, "method": method, "f1_tmp": f1_tmp, "tmp_auc_roc": tmp_auc}
-
-    text = tables.envmix_table([row("patchcore", -0.1, 0.06), row("cfa", 0.6, 0.7)], [])
-    patch = [line for line in text.splitlines() if "PatchCore [Cnn14" in line][0]
-    cfa = [line for line in text.splitlines() if "CFA [Cnn14" in line][0]
-    assert patch.split("|")[-4].strip() == "-" and patch.split("|")[-3].strip() == "-"  # temporal F1 / ROC missing, not -10 and 6
-    assert "60.0" in cfa and "70.0" in cfa
+    env = tables.envmix_table(envmix_new)
+    assert "PaDiM, BEATs [BEATs]" in env and "Cnn14" not in env
 
 
 def test_debug_holds_out_every_other_batch_for_the_score_statistics():
@@ -81,3 +63,43 @@ def test_the_runners_join_numeric_beats_layers_into_the_csv_row():
     for name in ("run_mimii.py", "run_envmix.py"):
         source = (Path(__file__).resolve().parents[1] / "paper_benchmark" / name).read_text(encoding="utf-8")
         assert 'str(layer) for layer in config["layers"]' in source  # BEATs layers are ints: "|".join(ints) raises a TypeError
+
+
+def test_the_common_subset_keeps_only_the_runs_every_beats_variant_completed():
+    def rows(variant, method, keep):
+        return [{"variant": variant, "method": method, "snr": s, "category": c, "machine_id": i, "img_roc_auc": 0.5 + 0.1 * (variant == "dinomaly_beats"), "f1_img": 0.6}
+                for s, c, i in keep]
+
+    all_runs = [(s, c, i) for s in ("0_db", "6_db", "m6_db") for c in tables.CATEGORIES for i in ("id_00", "id_02", "id_04", "id_06")]  # the 48 of the protocol
+    partial = all_runs[:5]
+    text = tables.common_subset_table(rows("dinomaly_beats", "dinomaly", all_runs) + rows("stfpm_beats", "stfpm", partial))
+    assert text.count("| 5 |") == 2  # both variants restricted to the same 5 runs
+    assert tables.common_subset_table(rows("dinomaly_beats", "dinomaly", all_runs)) == ""  # nothing incomplete: no extra table
+
+
+def test_the_one_percent_variant_is_patchcore_with_a_memory_fraction_and_the_plan_can_pick_it():
+    method, overrides = driver.VARIANTS["patchcore_beats_std_1pct"]
+    assert method == "patchcore" and overrides["patchcore_memory_fraction"] == 0.01 and overrides["backbone"] == "BEATs"
+    assert overrides["patchcore_band_banks"] and overrides["patchcore_score_std"] == "band"  # the same PatchCore as the 30000-patch one
+    assert driver.plan(["mimii", "envmix"], ["patchcore_beats_std_1pct"]) == [("mimii", "patchcore_beats_std_1pct"), ("envmix", "patchcore_beats_std_1pct")]
+    assert "patchcore_memory_fraction" not in driver.VARIANTS["patchcore_beats_std"][1]
+
+
+def test_the_memory_is_a_share_of_the_patches_of_the_training_set():
+    import torch
+    from benchmark_common import patchcore_bank_size
+
+    class Model:
+        def batch_input(self, batch):
+            return batch
+
+        def embed(self, batch):  # [B, C, time, bands]
+            return torch.zeros(batch.shape[0], 3, 62, 8)
+
+    loader = torch.utils.data.DataLoader(torch.zeros(900, 10), batch_size=4)
+    assert patchcore_bank_size(Model(), loader, 0.01) == int(900 * 62 * 8 * 0.01)  # 1% of the 446400 patches
+    assert patchcore_bank_size(Model(), torch.utils.data.DataLoader(torch.zeros(2, 10), batch_size=2), 0.01) == 32  # never fewer than 4 per band
+    import pytest
+
+    with pytest.raises(ValueError):
+        patchcore_bank_size(Model(), loader, 0.0)
