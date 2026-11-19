@@ -1,0 +1,125 @@
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "paper_benchmark"))
+
+import anomaly_removal as ar  # noqa: E402
+from moviad.utilities.audio.beats_feature_extractor import BEATsFbank, BEATsFeatureExtractor  # noqa: E402
+
+SR = 16000
+
+
+def make_clip(seconds=4.0, seed=0):
+    """Stationary noise + a 1 kHz tone between 1.5 s and 2.5 s: ``(mixture, background, tone)``."""
+    generator = torch.Generator().manual_seed(seed)
+    n = int(SR * seconds)
+    background = torch.randn(n, generator=generator) * 0.05
+    t = torch.arange(n) / SR
+    tone = torch.sin(2 * torch.pi * 1000 * t) * 0.5 * ((t > 1.5) & (t < 2.5)).float()
+    return background + tone, background, tone
+
+
+def tone_mask(frames, bins=128, low=40, high=80):
+    """The region of the tone in the filterbank grid: the frames of 1.5-2.5 s and the mel bins around 1 kHz."""
+    mask = torch.zeros(frames, bins)
+    mask[145:255, low:high] = 1.0
+    return mask
+
+
+def test_the_filterbank_grid_maps_onto_the_stft_grid_in_time_and_frequency():
+    frames = BEATsFeatureExtractor.fbank_shape(SR * 4)[0]
+    grid = ar.to_stft_grid(torch.zeros(frames, 128), 401)
+    assert grid.shape == (ar.N_FFT // 2 + 1, 401)
+    band = torch.zeros(frames, 128)
+    band[:, 100] = 1.0  # a high mel bin
+    grid = ar.to_stft_grid(band, 401)
+    peak = int(grid.mean(dim=1).argmax())
+    assert peak * SR / ar.N_FFT > 3000  # it lands on a high frequency
+    column = torch.zeros(frames, 128)
+    column[200, :] = 1.0  # one filterbank frame: samples 32000-32400, centred at 2.0125 s
+    grid = ar.to_stft_grid(column, 401)
+    assert abs(int(grid.mean(dim=0).argmax()) * ar.HOP / SR - 2.0125) < 0.02
+
+
+def test_removing_the_masked_region_brings_the_audio_back_towards_the_background():
+    mixture, background, tone = make_clip()
+    frames = BEATsFeatureExtractor.fbank_shape(mixture.shape[0])[0]
+    cleaned = ar.remove_anomaly(mixture, tone_mask(frames, low=35, high=85))
+    assert cleaned.shape == mixture.shape
+    assert ar.si_sdr(cleaned, background) > ar.si_sdr(mixture, background) + 5  # the tone is gone: several dB closer to the background
+    assert cleaned.abs().max() < mixture.abs().max()
+
+
+def test_an_empty_mask_changes_nothing_and_the_processing_never_adds_energy():
+    mixture, _, _ = make_clip()
+    frames = BEATsFeatureExtractor.fbank_shape(mixture.shape[0])[0]
+    untouched = ar.remove_anomaly(mixture, torch.zeros(frames, 128))
+    assert torch.allclose(untouched, mixture, atol=1e-4)
+    everything = ar.remove_anomaly(mixture, torch.ones(frames, 128))
+    assert everything.pow(2).sum() <= mixture.pow(2).sum() * 1.001
+
+
+def test_si_sdr_is_scale_invariant_and_high_for_a_copy():
+    generator = torch.Generator().manual_seed(0)
+    reference = torch.randn(8000, generator=generator)
+    assert ar.si_sdr(reference * 3.0, reference) > 60
+    noisy = reference + 0.3 * torch.randn(8000, generator=generator)  # about 10 dB
+    assert 8 < ar.si_sdr(noisy, reference) < 12
+
+
+def test_the_mask_is_the_map_above_the_threshold_with_soft_edges():
+    anomaly_map = torch.zeros(40, 20)
+    anomaly_map[10:20, 5:10] = 2.0
+    mask = ar.maps_to_mask(anomaly_map, tau=1.0)
+    assert mask[15, 7] == 1.0 and mask[35, 15] == 0.0
+    assert 0 < mask[8, 7] < 1  # a soft edge around the region
+    assert ar.maps_to_mask(anomaly_map, tau=5.0).sum() == 0
+
+
+def test_the_examples_are_anomalous_clips_of_different_classes():
+    categories = {1: "dog", 2: "dog", 3: "frog", 5: "sheep", 6: "frog"}
+    assert ar.pick_examples(categories, [0, 1, 1, 1, 0, 1, 1], 3) == [1, 3, 5]
+    assert ar.pick_examples(categories, [0, 1, 1, 1, 0, 1, 1], 2) == [1, 3]
+    assert ar.percentile_of(0.5, np.array([0.1, 0.2, 0.9, 1.0])) == 0.5
+
+
+class EnergyDetector:
+    """A stand-in for a model: the map is the energy of the filterbank above the median of its frequency, the score the largest value."""
+
+    def __init__(self):
+        self.fbank = BEATsFbank()
+
+    def __call__(self, waveforms):
+        spec = self.fbank(waveforms)[:, 0]  # (B, frames, 128)
+        maps = (spec - spec.median(dim=1, keepdim=True).values).unsqueeze(1)
+        return maps, maps.flatten(1).amax(dim=1), None
+
+
+def test_the_experiment_scores_the_cleaned_clip_with_every_detector_and_against_the_true_background(tmp_path):
+    mixture, background, tone = make_clip()
+    frames = BEATsFeatureExtractor.fbank_shape(mixture.shape[0])[0]
+    detector = ar.Detector("energy", EnergyDetector(), torch.device("cpu"))
+    normal_maps, normal_scores = [], []
+    for seed in range(1, 31):  # enough normal clips for the percentile not to be decided by a few of them
+        _, normal, _ = make_clip(seed=seed)
+        m, s = detector.map_and_score(normal)
+        normal_maps.append(m)
+        normal_scores.append(s)
+    detector.tau = float(np.quantile(np.concatenate([m.ravel() for m in normal_maps]), 0.99))
+    detector.normal_scores = np.array(normal_scores)
+    saved = {}
+    rows = ar.process_example({"energy": detector}, mixture, background, tone_mask(frames, low=30, high=90).numpy(), "demo", save=lambda v, w: saved.update({v: w}))
+    by_mask = {r["mask"]: r for r in rows}
+    assert set(by_mask) == {"energy", "oracle"} and set(saved) == {"energy", "oracle"}
+    for row in rows:
+        assert row["si_sdr_gain"] > 3  # both masks remove most of the tone
+        assert row["score_energy_cleaned"] < 0.6 * row["score_energy_mixture"]
+        assert row["pct_energy_mixture"] == 1.0 and row["pct_energy_cleaned"] <= row["pct_energy_mixture"]  # above every normal clip before
+        assert row["score_energy_cleaned"] < 0.6 * row["score_energy_mixture"]  # and much closer to them after (the toy score is not exact)
+    tight = tone_mask(frames, low=41, high=47).numpy()  # the pixels that really hold the tone
+    assert ar.localisation_metrics(detector.map_and_score(mixture)[0], tight, detector.tau)["pixel_auc"] > 0.9  # the map points at the tone
+    assert ar.summary_table(rows, ["energy"]).count("\n") == 3
