@@ -185,3 +185,34 @@ def test_a_saved_dinomaly_restores_its_trainable_part_and_a_changed_setting_mean
     other = ar.checkpoint_meta("dinomaly", {"backbone": "BEATs", "epochs": 4}, "drilling", -6.0, 1, 500)  # trained for fewer epochs
     assert ar.load_checkpoint("dinomaly", model(), tmp_path, other) is False
     assert ar.load_checkpoint("dinomaly", model(), tmp_path / "missing", meta) is False
+
+
+def test_the_base_config_gets_the_defaults_of_the_benchmark(tmp_path):
+    """The DCASE config has no memory_bank_size: the models are built here without the runners that add the defaults (a KeyError on the server)."""
+    import json
+
+    from run_beats_benchmark import build_config
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"device": "auto", "batch_size": 4, "num_workers": 0, "knn_beats_checkpoint": "x.pt", "knn_beats_code_dir": "beats",
+                                "mimii": {"dataset_path": "m"}, "envmix": {"urban_path": "u", "esc50_path": "e", "seeds": [0]}}), encoding="utf-8")
+    base = ar.load_base_config(path)
+    for variant in ("patchcore_beats_std_1pct", "dinomaly_beats"):
+        config = build_config(base, "envmix", variant, "out", [1], [1])
+        assert config["memory_bank_size"] and config["batch_size"] == 4 and config["backbone"] == "BEATs" and config["envmix"]["esc50_path"] == "e"
+    assert build_config(base, "envmix", "patchcore_beats_std_1pct", "out", [1], [1])["patchcore_memory_fraction"] == 0.01
+
+
+def test_a_wav_is_written_with_the_standard_library_and_reads_back(tmp_path):
+    import wave
+
+    t = torch.arange(16000) / SR
+    tone = torch.sin(2 * torch.pi * 440 * t)
+    ar.save_wav(tmp_path / "sub" / "tone.wav", tone, scale=0.5)
+    with wave.open(str(tmp_path / "sub" / "tone.wav"), "rb") as handle:
+        assert (handle.getnchannels(), handle.getsampwidth(), handle.getframerate(), handle.getnframes()) == (1, 2, 16000, 16000)
+        data = np.frombuffer(handle.readframes(16000), dtype=np.int16)
+    assert abs(data.max() / 32767 - 0.5) < 0.01  # the scale is applied
+    ar.save_wav(tmp_path / "loud.wav", tone * 10, scale=1.0)  # clipped, never wrapped around
+    with wave.open(str(tmp_path / "loud.wav"), "rb") as handle:
+        assert np.frombuffer(handle.readframes(16000), dtype=np.int16).max() == 32767

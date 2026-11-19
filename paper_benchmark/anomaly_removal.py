@@ -251,10 +251,16 @@ def save_figure(path: Path, mixture, background, maps: dict[str, np.ndarray], tr
 
 
 def save_wav(path: Path, waveform: torch.Tensor, scale: float) -> None:
-    import torchaudio
+    """A 16-bit mono wav, with the standard library: torchaudio.save needs a backend that not every installation has."""
+    import wave
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    torchaudio.save(str(path), (waveform.float() * scale).clamp(-1, 1).unsqueeze(0), SAMPLE_RATE)
+    samples = ((waveform.float() * scale).clamp(-1, 1) * 32767).round().short().numpy()
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(SAMPLE_RATE)
+        handle.writeframes(samples.tobytes())
 
 
 # ---------------------------------------------------------------------------------------------- saved models
@@ -294,6 +300,14 @@ def load_checkpoint(name: str, model, folder: Path, meta: dict) -> bool:
     else:
         model.load_state_dict(state, strict=False)  # the BEATs weights are not in the file
     return True
+
+
+def load_base_config(path: Path) -> dict:
+    """The config with the defaults of the benchmark (``memory_bank_size``, ``batch_size``...): the runners load it this way, and the
+    models are built here without passing through them."""
+    from benchmark_common import load_config
+
+    return load_config(Path(path).expanduser())
 
 
 # ---------------------------------------------------------------------------------------------- the experiment
@@ -374,7 +388,10 @@ def run_combo(base: dict, background_name: str, snr: float, seed: int, examples:
         save_wav(folder / "5_true_background.wav", sample.bg_clip, scale)
         save_wav(folder / "6_anomaly_only.wav", sample.anomaly_clip, scale)
         maps = {name: d.map_and_score(sample.audio_clip)[0] for name, d in detectors.items()}
-        save_figure(folder / "figure.png", sample.audio_clip, sample.bg_clip, maps, truth, cleaned_audio)
+        try:  # the audio and the numbers are already written: a problem with the figure must not stop the run
+            save_figure(folder / "figure.png", sample.audio_clip, sample.bg_clip, maps, truth, cleaned_audio)
+        except Exception as error:  # noqa: BLE001
+            print(f"figure not written for {label}: {error!r}", flush=True)
     del detectors
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -394,7 +411,7 @@ def main() -> None:
     parser.add_argument("--retrain", action="store_true", help="train again even if a saved model exists")
     parser.add_argument("--no-save", action="store_true", help="do not save or load models")
     args = parser.parse_args()
-    base = json.loads(args.base_config.expanduser().read_text(encoding="utf-8"))
+    base = load_base_config(args.base_config)
     all_rows: list[dict] = []
     for combo in args.combos:
         background, snr = combo.rsplit(":", 1)
