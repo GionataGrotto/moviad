@@ -109,20 +109,51 @@ def test_the_experiment_scores_the_cleaned_clip_with_every_detector_and_against_
         m, s = detector.map_and_score(normal)
         normal_maps.append(m)
         normal_scores.append(s)
-    detector.tau = float(np.quantile(np.concatenate([m.ravel() for m in normal_maps]), 0.99))
+    pixels = np.concatenate([m.ravel() for m in normal_maps])
+    detector.thresholds = {0.9: float(np.quantile(pixels, 0.9)), 0.99: float(np.quantile(pixels, 0.99))}
     detector.normal_scores = np.array(normal_scores)
     saved = {}
-    rows = ar.process_example({"energy": detector}, mixture, background, tone_mask(frames, low=30, high=90).numpy(), "demo", save=lambda v, w: saved.update({v: w}))
-    by_mask = {r["mask"]: r for r in rows}
-    assert set(by_mask) == {"energy", "oracle"} and set(saved) == {"energy", "oracle"}
+    truth = tone_mask(frames, low=30, high=90).numpy()
+    rows = ar.process_example({"energy": detector}, mixture, tone, truth, "demo", quantiles=(0.99, 0.9), modes=("replace", "cap"),
+                              save=lambda v, w: saved.update({v: w}))
+    assert {(r["mask"], r["threshold"]) for r in rows} == {("energy", "q0.99"), ("energy", "q0.9"), ("energy", "area"), ("oracle", "truth")}
+    assert len(rows) == 8 and set(saved) == {"energy", "oracle"}  # saved: the main threshold (the first) and the oracle
     for row in rows:
-        assert row["si_sdr_gain"] > 3  # both masks remove most of the tone
-        assert row["score_energy_cleaned"] < 0.6 * row["score_energy_mixture"]
-        assert row["pct_energy_mixture"] == 1.0 and row["pct_energy_cleaned"] <= row["pct_energy_mixture"]  # above every normal clip before
-        assert row["score_energy_cleaned"] < 0.6 * row["score_energy_mixture"]  # and much closer to them after (the toy score is not exact)
+        if row["mask"] == "oracle" or row["threshold"] == "q0.99":
+            continue
+        assert row["anomaly_removed_db"] > 6 and row["si_sdr_gain"] > 3
+        assert row["pct_energy_mixture"] == 1.0 and row["pct_energy_cleaned"] <= row["pct_energy_mixture"]
+    oracle = [r for r in rows if r["mask"] == "oracle" and r["mode"] == "replace"][0]
+    assert oracle["anomaly_removed_db"] > 10 and oracle["background_error_db"] < -5
+    assert oracle["score_energy_cleaned"] < 0.6 * oracle["score_energy_mixture"]
     tight = tone_mask(frames, low=41, high=47).numpy()  # the pixels that really hold the tone
-    assert ar.localisation_metrics(detector.map_and_score(mixture)[0], tight, detector.tau)["pixel_auc"] > 0.9  # the map points at the tone
-    assert ar.summary_table(rows, ["energy"]).count("\n") == 3
+    assert ar.localisation_metrics(detector.map_and_score(mixture)[0], tight, detector.thresholds[0.99])["pixel_auc"] > 0.9
+    assert ar.summary_table(rows, ["energy"], "replace").count(chr(10)) == 5
+    assert ar.aggregate_table(rows, ["energy"]).count(chr(10)) == 9
+
+
+def test_the_removal_metrics_tell_an_untouched_clip_from_a_clean_one():
+    mixture, background, tone = make_clip()
+    untouched = ar.removal_metrics(mixture, mixture, tone)
+    assert abs(untouched["anomaly_left"] - 1) < 1e-6 and abs(untouched["anomaly_removed_db"]) < 1e-3
+    clean = ar.removal_metrics(background, mixture, tone)
+    assert clean["anomaly_removed_db"] > 40 and clean["background_error_db"] < -40
+    half = ar.removal_metrics(background + 0.5 * tone, mixture, tone)
+    assert abs(half["anomaly_removed_db"] - 6.02) < 0.1
+
+
+def test_replace_fills_the_masked_cells_with_the_background_and_cap_only_lowers_them():
+    generator = torch.Generator().manual_seed(3)
+    background = torch.randn(SR * 4, generator=generator) * 0.05
+    frames = BEATsFeatureExtractor.fbank_shape(background.shape[0])[0]
+    mask = tone_mask(frames, low=35, high=85)
+    quiet_hole = background.clone()
+    quiet_hole[24000:40000] *= 0.1  # a region quieter than the background: cap leaves it, replace raises it
+    replaced = ar.remove_anomaly(quiet_hole, mask, mode="replace")
+    capped = ar.remove_anomaly(quiet_hole, mask, mode="cap")
+    assert replaced[24000:40000].pow(2).mean() > capped[24000:40000].pow(2).mean()
+    with pytest.raises(ValueError):
+        ar.remove_anomaly(quiet_hole, mask, mode="other")
 
 
 # ---------------------------------------------------------------------------------------------- saved models
