@@ -257,6 +257,45 @@ def save_wav(path: Path, waveform: torch.Tensor, scale: float) -> None:
     torchaudio.save(str(path), (waveform.float() * scale).clamp(-1, 1).unsqueeze(0), SAMPLE_RATE)
 
 
+# ---------------------------------------------------------------------------------------------- saved models
+def trained_state(name: str, model) -> dict[str, torch.Tensor]:
+    """What training changed, without BEATs (a pretrained, frozen copy of it is loaded again with the model).
+
+    PatchCore: its buffers (the memory, the standardisation of the features and of the scores). Dinomaly: the bottleneck and the decoder.
+    """
+    if name == "dinomaly":
+        return {k: v.detach().cpu() for k, v in model.trainable.state_dict().items()}
+    return {k: v.detach().cpu() for k, v in model.state_dict().items() if not k.startswith("feature_extractor.")}
+
+
+def checkpoint_meta(name: str, cfg: dict, background: str, snr: float, seed: int, train_size: int) -> dict:
+    keys = ("backbone", "layers", "patchcore_band_banks", "patchcore_score_std", "patchcore_memory_fraction", "memory_bank_size", "epochs", "dinomaly_distance")
+    return {"model": name, "background": background, "snr": float(snr), "seed": int(seed), "train_size": int(train_size),
+            "config": {k: cfg.get(k) for k in keys}}
+
+
+def save_checkpoint(name: str, model, folder: Path, meta: dict) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    torch.save(trained_state(name, model), folder / f"{name}.pt")
+    (folder / f"{name}.json").write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def load_checkpoint(name: str, model, folder: Path, meta: dict) -> bool:
+    """Load a saved model into ``model`` if it was trained with the same settings on the same data; False (nothing loaded) otherwise."""
+    weights, description = folder / f"{name}.pt", folder / f"{name}.json"
+    if not (weights.exists() and description.exists()):
+        return False
+    if json.loads(description.read_text(encoding="utf-8")) != json.loads(json.dumps(meta)):
+        print(f"{name}: the saved model in {folder} was trained with other settings: it is trained again", flush=True)
+        return False
+    state = torch.load(weights, map_location="cpu", weights_only=True)
+    if name == "dinomaly":
+        model.trainable.load_state_dict(state)
+    else:
+        model.load_state_dict(state, strict=False)  # the BEATs weights are not in the file
+    return True
+
+
 # ---------------------------------------------------------------------------------------------- the experiment
 def summary_table(rows: list[dict], detectors: list[str]) -> str:
     header = ["example", "mask", "SI-SDR before", "SI-SDR after", "gain (dB)"]
@@ -271,7 +310,8 @@ def summary_table(rows: list[dict], detectors: list[str]) -> str:
     return "\n".join(lines)
 
 
-def run_combo(base: dict, background_name: str, snr: float, seed: int, examples: int, output: Path, quantile: float) -> list[dict]:
+def run_combo(base: dict, background_name: str, snr: float, seed: int, examples: int, output: Path, quantile: float,
+              models_dir: Path | None = None, retrain: bool = False) -> list[dict]:
     from moviad.datasets.audio_dataset import SpectrogramBinarizer
     from benchmark_common import fit_model, make_model, resolve_device, set_seed
     from run_beats_benchmark import build_config
@@ -286,11 +326,19 @@ def run_combo(base: dict, background_name: str, snr: float, seed: int, examples:
     train_dataset, test_dataset, train_loader, test_loader, _ = build_loaders(config, background_name, snr, seed, False, "patchcore")
     input_size = tuple(int(d) for d in test_dataset.img_shape[1:])
     detectors = {}
+    folder_models = None if models_dir is None else models_dir / f"{background_name}_snr{snr:g}_seed{seed}"
     for name, cfg in configs.items():
         model = make_model(name, cfg, device, input_size, class_name=background_name)
-        fit_model(name, model, train_loader, test_loader, cfg, device, False)
+        meta = checkpoint_meta(name, cfg, background_name, snr, seed, len(train_dataset))
+        if folder_models is not None and not retrain and load_checkpoint(name, model, folder_models, meta):
+            print(f"{name}: model loaded from {folder_models}", flush=True)
+        else:
+            fit_model(name, model, train_loader, test_loader, cfg, device, False)
+            if folder_models is not None:
+                save_checkpoint(name, model, folder_models, meta)
+                print(f"{name}: model saved in {folder_models}", flush=True)
         model.eval()
-        detectors[name] = Detector(name, model, device)
+        detectors[name] = Detector(name, model.to(device), device)
     # thresholds and normal scores from the normal clips of the test set
     labels, normal_maps = [], {name: [] for name in detectors}
     normal_scores = {name: [] for name in detectors}
@@ -341,13 +389,18 @@ def main() -> None:
     parser.add_argument("--examples-per-combo", type=int, default=2)
     parser.add_argument("--seed", type=int, default=1, help="not 0: with 0 the contamination of EnvMix is not seeded")
     parser.add_argument("--threshold-quantile", type=float, default=0.99, help="the map threshold: this quantile of the pixels of the normal test clips")
+    parser.add_argument("--models-dir", type=Path, default=Path("results/paper_benchmark/anomaly_removal_models"),
+                        help="where the trained models are saved and loaded from (a repeated run does not train again)")
+    parser.add_argument("--retrain", action="store_true", help="train again even if a saved model exists")
+    parser.add_argument("--no-save", action="store_true", help="do not save or load models")
     args = parser.parse_args()
     base = json.loads(args.base_config.expanduser().read_text(encoding="utf-8"))
     all_rows: list[dict] = []
     for combo in args.combos:
         background, snr = combo.rsplit(":", 1)
         print(f"\n===== {background} at {float(snr):g} dB", flush=True)
-        all_rows += run_combo(base, background, float(snr), args.seed, args.examples_per_combo, args.output_dir, args.threshold_quantile)
+        all_rows += run_combo(base, background, float(snr), args.seed, args.examples_per_combo, args.output_dir, args.threshold_quantile,
+                              None if args.no_save else args.models_dir, args.retrain)
         if all_rows:  # written after every combo: a crash keeps what is done
             args.output_dir.mkdir(parents=True, exist_ok=True)
             fields = list(dict.fromkeys(k for row in all_rows for k in row))

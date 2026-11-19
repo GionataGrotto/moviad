@@ -123,3 +123,65 @@ def test_the_experiment_scores_the_cleaned_clip_with_every_detector_and_against_
     tight = tone_mask(frames, low=41, high=47).numpy()  # the pixels that really hold the tone
     assert ar.localisation_metrics(detector.map_and_score(mixture)[0], tight, detector.tau)["pixel_auc"] > 0.9  # the map points at the tone
     assert ar.summary_table(rows, ["energy"]).count("\n") == 3
+
+
+# ---------------------------------------------------------------------------------------------- saved models
+class _LevelExtractor:
+    """Waveform [B, 32] -> a feature map [B, 6, 8, 4] whose level is the waveform (as in the PatchCore target tests)."""
+
+    quantized = False
+
+    def __init__(self):
+        self.device = torch.device("cpu")
+
+    def to(self, device):
+        return self
+
+    def __call__(self, batch):
+        grid = batch.reshape(batch.shape[0], 1, 8, 4)
+        return [grid.expand(-1, 6, -1, -1).contiguous()]
+
+
+def _patchcore():
+    from moviad.models.audio.patchcore.patchcore import PatchCore
+
+    model = PatchCore(device=torch.device("cpu"), input_size=(8, 4), feature_extractor=_LevelExtractor(), memory_bank_size=64, num_neighbors=3,
+                      blur=False, band_banks=True, score_standardization="band", holdout_fraction=0.25)
+    model.feature_pooler = torch.nn.Identity()
+    return model
+
+
+def test_a_saved_patchcore_scores_exactly_like_the_one_that_was_trained(tmp_path):
+    clips = torch.utils.data.DataLoader(torch.randn(40, 32) * 0.1, batch_size=4)
+    trained = _patchcore()
+    trained.fit(clips)
+    trained.eval()
+    meta = ar.checkpoint_meta("patchcore", {"backbone": "BEATs", "patchcore_memory_fraction": 0.01}, "siren", 0.0, 1, 40)
+    ar.save_checkpoint("patchcore", trained, tmp_path, meta)
+    assert (tmp_path / "patchcore.pt").exists() and not any(k.startswith("feature_extractor.") for k in torch.load(tmp_path / "patchcore.pt"))
+
+    fresh = _patchcore()
+    assert ar.load_checkpoint("patchcore", fresh, tmp_path, meta) is True
+    fresh.eval()
+    test = torch.randn(6, 32) * 0.1
+    test[3] += 2.0  # an anomalous clip
+    for a, b in zip(trained(test), fresh(test)):
+        assert torch.allclose(a, b)
+
+
+def test_a_saved_dinomaly_restores_its_trainable_part_and_a_changed_setting_means_training_again(tmp_path):
+    from types import SimpleNamespace
+
+    def model():
+        return SimpleNamespace(trainable=torch.nn.ModuleList([torch.nn.Linear(3, 3), torch.nn.Linear(3, 2)]))
+
+    trained = model()
+    meta = ar.checkpoint_meta("dinomaly", {"backbone": "BEATs", "epochs": 12}, "drilling", -6.0, 1, 500)
+    ar.save_checkpoint("dinomaly", trained, tmp_path, meta)
+    fresh = model()
+    assert ar.load_checkpoint("dinomaly", fresh, tmp_path, meta) is True
+    for a, b in zip(trained.trainable.parameters(), fresh.trainable.parameters()):
+        assert torch.equal(a, b)
+    other = ar.checkpoint_meta("dinomaly", {"backbone": "BEATs", "epochs": 4}, "drilling", -6.0, 1, 500)  # trained for fewer epochs
+    assert ar.load_checkpoint("dinomaly", model(), tmp_path, other) is False
+    assert ar.load_checkpoint("dinomaly", model(), tmp_path / "missing", meta) is False
