@@ -152,6 +152,11 @@ def test_replace_fills_the_masked_cells_with_the_background_and_cap_only_lowers_
     replaced = ar.remove_anomaly(quiet_hole, mask, mode="replace")
     capped = ar.remove_anomaly(quiet_hole, mask, mode="cap")
     assert replaced[24000:40000].pow(2).mean() > capped[24000:40000].pow(2).mean()
+    sampled = ar.remove_anomaly(quiet_hole, mask, mode="sample")
+    assert sampled.shape == quiet_hole.shape and torch.isfinite(sampled).all()
+    mixture, background_only, tone = make_clip()
+    cleaned = ar.remove_anomaly(mixture, tone_mask(frames, low=35, high=85), mode="sample")
+    assert ar.removal_metrics(cleaned, mixture, tone)["anomaly_removed_db"] > 8
     with pytest.raises(ValueError):
         ar.remove_anomaly(quiet_hole, mask, mode="other")
 

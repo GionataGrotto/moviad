@@ -42,8 +42,9 @@ with an estimate of the background (median magnitude of the same frequency in th
 kept and the waveform was rebuilt. Every model is tried with several thresholds of its map (the 90th, 95th and 99th percentile of the
 pixels of the normal test clips: `q0.9`, `q0.95`, `q0.99`), and with `area`: the threshold that gives a mask as big as the true one,
 which separates how well the model localises from the choice of the threshold. The `oracle` mask is the ground-truth mask: the best a
-mask can do, so it separates the limit of the removal method from the error of the models. Two ways of filling: `replace` (the masked
-cells get the background level) and `cap` (they are only lowered to it, never raised).
+mask can do, so it separates the limit of the removal method from the error of the models. Three ways of filling: `sample` (every masked cell takes the
+value, with its phase, of a random unmasked frame at the same frequency: real background), `replace` (the masked cells get the
+median background level) and `cap` (they are only lowered to it, never raised).
 
 ## Folders: `examples/<background>_snr<dB>_<anomaly class>_<clip>/`
 
@@ -131,10 +132,11 @@ def remove_anomaly(waveform: torch.Tensor, mask_fbank: torch.Tensor, min_backgro
     the mask is below 0.5 (the 20th percentile of all the frames when there are fewer than ``min_background_frames``). ``mode``:
     ``"cap"``: new magnitude ``(1 - m) |X| + m min(|X|, background)`` (it can only take energy away, but leaves the anomaly where
     its cell is already quieter than the background median); ``"replace"``: ``(1 - m) |X| + m background`` (the masked cells get the
-    background level, whatever they had).
+    background level, whatever they had); ``"sample"``: every masked cell takes the complex value (magnitude and phase) of the same
+    frequency in a random frame outside the mask, so the filled part is real background and not a flat smooth surface.
     """
-    if mode not in ("cap", "replace"):
-        raise ValueError(f"mode must be 'cap' or 'replace', got {mode!r}")
+    if mode not in ("cap", "replace", "sample"):
+        raise ValueError(f"mode must be 'cap', 'replace' or 'sample', got {mode!r}")
     window = torch.hann_window(WIN_LENGTH)
     spectrum = torch.stft(waveform, N_FFT, hop_length=HOP, win_length=WIN_LENGTH, window=window, center=True, return_complex=True)
     magnitude, phase = spectrum.abs(), torch.angle(spectrum)
@@ -144,6 +146,17 @@ def remove_anomaly(waveform: torch.Tensor, mask_fbank: torch.Tensor, min_backgro
     background = torch.where(unmasked, magnitude, torch.full_like(magnitude, float("nan"))).nanmedian(dim=1).values
     fallback = torch.quantile(magnitude, 0.2, dim=1)
     background = torch.where(unmasked.sum(dim=1) >= min_background_frames, background, fallback)
+    if mode == "sample":
+        generator = torch.Generator().manual_seed(0)
+        quiet = magnitude.argsort(dim=1)[:, : max(min_background_frames, magnitude.shape[1] // 5)]  # the quietest frames, if the mask leaves few
+        weights = torch.where(unmasked, 1.0, 0.0)
+        few = unmasked.sum(dim=1) < min_background_frames
+        weights[few] = 0.0
+        weights[few[:, None].expand_as(weights) & torch.zeros_like(weights, dtype=torch.bool).scatter(1, quiet, True)] = 1.0
+        source = torch.multinomial(weights, magnitude.shape[1], replacement=True, generator=generator)  # (freq, frames)
+        sampled = torch.gather(spectrum, 1, source)
+        mixed = spectrum * (1 - mask) + sampled * mask
+        return torch.istft(mixed, N_FFT, hop_length=HOP, win_length=WIN_LENGTH, window=window, center=True, length=waveform.shape[0])
     fill = torch.minimum(magnitude, background[:, None]) if mode == "cap" else background[:, None].expand_as(magnitude)
     cleaned = magnitude * (1 - mask) + mask * fill
     return torch.istft(torch.polar(cleaned, phase), N_FFT, hop_length=HOP, win_length=WIN_LENGTH, window=window, center=True,
@@ -405,7 +418,7 @@ def aggregate_table(rows: list[dict], detectors: list[str]) -> str:
 
 
 def run_combo(base: dict, background_name: str, snr: float, seed: int, examples: int, output: Path, quantiles: tuple[float, ...],
-              models_dir: Path | None = None, retrain: bool = False, modes: tuple[str, ...] = ("replace", "cap"),
+              models_dir: Path | None = None, retrain: bool = False, modes: tuple[str, ...] = ("sample", "replace", "cap"),
               main_quantile: float | None = None, main_mode: str | None = None) -> list[dict]:
     from moviad.datasets.audio_dataset import SpectrogramBinarizer
     from benchmark_common import fit_model, make_model, resolve_device, set_seed
@@ -491,9 +504,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1, help="not 0: with 0 the contamination of EnvMix is not seeded")
     parser.add_argument("--quantiles", nargs="+", type=float, default=[0.9, 0.95, 0.99],
                         help="the map thresholds: these quantiles of the pixels of the normal test clips (every one is evaluated)")
-    parser.add_argument("--modes", nargs="+", choices=("replace", "cap"), default=["replace", "cap"], help="how the masked part is filled")
+    parser.add_argument("--modes", nargs="+", choices=("replace", "cap", "sample"), default=["sample", "replace", "cap"], help="how the masked part is filled")
     parser.add_argument("--main-quantile", type=float, default=0.95, help="the threshold of the wav files and of the main table")
-    parser.add_argument("--main-mode", choices=("replace", "cap"), default="replace", help="the way of filling of the wav files and of the main table")
+    parser.add_argument("--main-mode", choices=("replace", "cap", "sample"), default="sample", help="the way of filling of the wav files and of the main table")
     parser.add_argument("--models-dir", type=Path, default=Path("results/paper_benchmark/anomaly_removal_models"),
                         help="where the trained models are saved and loaded from (a repeated run does not train again)")
     parser.add_argument("--retrain", action="store_true", help="train again even if a saved model exists")
