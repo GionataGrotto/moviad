@@ -32,7 +32,13 @@ N_FFT, WIN_LENGTH, HOP = 512, 400, 160  # the frames of the BEATs filterbank: 25
 MEL_BINS, MEL_LOW = 128, 20.0
 DEFAULT_COMBOS = ("air_conditioner:0", "engine_idling:-6", "street_music:0", "children_playing:6", "siren:-6")
 #: the files of an example, in the order to listen to them
-AFTER_FILES = {"patchcore": "2_after_patchcore.wav", "dinomaly": "3_after_dinomaly.wav", "oracle": "4_after_oracle_mask.wav"}
+AFTER_FILES = {"patchcore": "2_after_patchcore.wav", "dinomaly": "3_after_dinomaly.wav", "oracle": "4_after_oracle_mask.wav",
+               "patchcore+fine": "7_after_patchcore_fine_mask.wav", "dinomaly+fine": "8_after_dinomaly_fine_mask.wav",
+               "fused": "9_after_both_models_mask.wav", "patchcore+iter": "10_after_patchcore_iterative.wav",
+               "dinomaly+iter": "11_after_dinomaly_iterative.wav", "audiosep": "12_after_audiosep.wav"}
+FILLS = ("cap", "replace", "sample", "nmf")
+#: the optional families of methods of process_example
+EXTRAS = ("adaptive", "fine", "fusion", "iterative")
 
 README = """# Anomaly removal on EnvMix (BEATs): results to listen to and read
 
@@ -46,6 +52,25 @@ mask can do, so it separates the limit of the removal method from the error of t
 value, with its phase, of a random unmasked frame at the same frequency: real background), `replace` (the masked cells get the
 median background level) and `cap` (they are only lowered to it, never raised).
 
+## Methods
+
+Every method gets the same checks (the table columns below). `threshold` says which one:
+
+* `q0.9`, `q0.95`, `q0.99`, `area`: a fixed threshold of the map, or the one that gives a mask as big as the true one.
+* `rel0.5`: a threshold that follows the clip (halfway between the lowest and the highest value of its map).
+* `q0.95+fine`: the mask of `q0.95` restricted to the cells of the STFT that really stick out of the background (3 dB above the median
+  of their frequency): the map says where, the energy of the clip says what.
+* `and`, `avg` (mask `fused`): the maps of the two models in units of their own thresholds, combined with the minimum (both must flag
+  a pixel) or the mean.
+* `q0.95x3`: remove, compute the map again, remove what is still flagged (at most 3 rounds, none if the clip already scores as normal).
+* `audiosep` (only when it is installed): the source that AudioSep separates for the text of the anomaly class, subtracted from the clip.
+* Fillings: `sample`, `replace`, `cap` and `nmf` (the magnitude of the masked cells is predicted by a low-rank model fitted on the rest
+  of the clip, the phase is the one of `sample`).
+
+`control error (dB)` is a check on the filling and the mask, not on the model: the same procedure is applied to the true background alone
+(without the anomaly); it should leave it as it is, so the lower the better. Likewise `pct_<model>_control` in `metrics.csv` is where the
+score of that clip falls after the procedure: if it rises, the procedure itself makes the clip look anomalous.
+
 ## Folders: `examples/<background>_snr<dB>_<anomaly class>_<clip>/`
 
 | File | What it is |
@@ -56,6 +81,7 @@ median background level) and `cap` (they are only lowered to it, never raised).
 | `4_after_oracle_mask.wav` | the anomaly removed with the ground-truth mask (the best case) |
 | `5_true_background.wav` | the background that is inside the clip (what a perfect removal would give) |
 | `6_anomaly_only.wav` | the anomaly alone (what should disappear) |
+| `7_` ... `12_after_*.wav` | the same for the fine mask, both models together, the iterative removal and AudioSep (when run) |
 | `figure.png` | spectrograms: input, background, ground-truth mask, the two anomaly maps, the three cleaned clips |
 
 All the files of one example share the same volume scale, so they can be compared by ear.
@@ -125,28 +151,63 @@ def maps_to_mask(anomaly_map: torch.Tensor, tau: float, dilate: int = 5, blur: i
     return mask[0, 0].clamp(0, 1)
 
 
-def remove_anomaly(waveform: torch.Tensor, mask_fbank: torch.Tensor, min_background_frames: int = 5, mode: str = "replace") -> torch.Tensor:
-    """The waveform with the masked part of its spectrogram replaced by a background estimate, the phase unchanged.
+def stft_frames(n_samples: int) -> int:
+    """The number of frames of the (centred) STFT of ``n_samples`` samples."""
+    return n_samples // HOP + 1
 
-    ``mask_fbank`` is ``(frames, 128)`` in [0, 1]. For every frequency the background magnitude is the median over the frames where
-    the mask is below 0.5 (the 20th percentile of all the frames when there are fewer than ``min_background_frames``). ``mode``:
-    ``"cap"``: new magnitude ``(1 - m) |X| + m min(|X|, background)`` (it can only take energy away, but leaves the anomaly where
-    its cell is already quieter than the background median); ``"replace"``: ``(1 - m) |X| + m background`` (the masked cells get the
-    background level, whatever they had); ``"sample"``: every masked cell takes the complex value (magnitude and phase) of the same
-    frequency in a random frame outside the mask, so the filled part is real background and not a flat smooth surface.
-    """
-    if mode not in ("cap", "replace", "sample"):
-        raise ValueError(f"mode must be 'cap', 'replace' or 'sample', got {mode!r}")
+
+def _stft(waveform: torch.Tensor):
     window = torch.hann_window(WIN_LENGTH)
     spectrum = torch.stft(waveform, N_FFT, hop_length=HOP, win_length=WIN_LENGTH, window=window, center=True, return_complex=True)
-    magnitude, phase = spectrum.abs(), torch.angle(spectrum)
-    mask = to_stft_grid(mask_fbank, magnitude.shape[1])
-    mask = mask.clamp(0, 1)
-    unmasked = mask < 0.5
+    return spectrum, window
+
+
+def background_magnitude(magnitude: torch.Tensor, unmasked: torch.Tensor, min_background_frames: int = 5) -> torch.Tensor:
+    """For every frequency the median magnitude over the frames outside the mask (the 20th percentile of all the frames if fewer than
+    ``min_background_frames`` are left)."""
     background = torch.where(unmasked, magnitude, torch.full_like(magnitude, float("nan"))).nanmedian(dim=1).values
     fallback = torch.quantile(magnitude, 0.2, dim=1)
-    background = torch.where(unmasked.sum(dim=1) >= min_background_frames, background, fallback)
-    if mode == "sample":
+    return torch.where(unmasked.sum(dim=1) >= min_background_frames, background, fallback)
+
+
+def nmf_magnitude(magnitude: torch.Tensor, observed: torch.Tensor, rank: int = 8, iterations: int = 60, seed: int = 0) -> torch.Tensor:
+    """A low-rank model ``W H`` of the magnitude fitted only on the observed cells (1 in ``observed``): it predicts the background in
+    the masked cells from the spectral shapes that the rest of the clip has (multiplicative updates of the weighted least squares).
+    The columns of ``H`` of the frames that are (almost) all masked are copied from random observed frames."""
+    generator = torch.Generator().manual_seed(seed)
+    v, m = magnitude.double() + 1e-6, observed.double()
+    scale = float((v.mean() / rank).sqrt())
+    w = torch.rand(v.shape[0], rank, generator=generator, dtype=torch.double) * scale + 1e-3
+    h = torch.rand(rank, v.shape[1], generator=generator, dtype=torch.double) * scale + 1e-3
+    for _ in range(iterations):
+        h = h * (w.T @ (m * v)) / (w.T @ (m * (w @ h)) + 1e-9)
+        w = w * ((m * v) @ h.T) / ((m * (w @ h)) @ h.T + 1e-9)
+    good = (m.mean(dim=0) >= 0.2).nonzero().flatten()
+    bad = (m.mean(dim=0) < 0.2).nonzero().flatten()
+    if len(good) == 0:
+        return v.float()
+    if len(bad):
+        h[:, bad] = h[:, good[torch.randint(len(good), (len(bad),), generator=generator)]]
+    return (w @ h).float()
+
+
+def remove_from_stft(waveform: torch.Tensor, mask: torch.Tensor, min_background_frames: int = 5, mode: str = "replace") -> torch.Tensor:
+    """The waveform with the masked cells of its STFT (``mask``: ``(n_fft/2 + 1, frames)`` in [0, 1]) filled with a background estimate.
+
+    ``mode``: ``"cap"``: new magnitude ``(1 - m) |X| + m min(|X|, background)`` (it can only take energy away, but leaves the anomaly where
+    its cell is already quieter than the background median); ``"replace"``: ``(1 - m) |X| + m background`` (the masked cells get the
+    background level, whatever they had); ``"sample"``: every masked cell takes the complex value (magnitude and phase) of the same
+    frequency in a random frame outside the mask, so the filled part is real background and not a flat smooth surface; ``"nmf"``: the
+    magnitude of the masked cells is predicted by a low-rank model fitted on the cells outside the mask (the phase is the one of
+    ``"sample"``).
+    """
+    if mode not in FILLS:
+        raise ValueError(f"mode must be one of {FILLS}, got {mode!r}")
+    spectrum, window = _stft(waveform)
+    magnitude, phase = spectrum.abs(), torch.angle(spectrum)
+    mask = mask.clamp(0, 1)
+    unmasked = mask < 0.5
+    if mode in ("sample", "nmf"):
         generator = torch.Generator().manual_seed(0)
         quiet = magnitude.argsort(dim=1)[:, : max(min_background_frames, magnitude.shape[1] // 5)]  # the quietest frames, if the mask leaves few
         weights = torch.where(unmasked, 1.0, 0.0)
@@ -156,11 +217,32 @@ def remove_anomaly(waveform: torch.Tensor, mask_fbank: torch.Tensor, min_backgro
         source = torch.multinomial(weights, magnitude.shape[1], replacement=True, generator=generator)  # (freq, frames)
         sampled = torch.gather(spectrum, 1, source)
         mixed = spectrum * (1 - mask) + sampled * mask
+        if mode == "nmf":
+            model = nmf_magnitude(magnitude, unmasked.float())
+            mixed = torch.polar(magnitude * (1 - mask) + model * mask, torch.angle(mixed))
         return torch.istft(mixed, N_FFT, hop_length=HOP, win_length=WIN_LENGTH, window=window, center=True, length=waveform.shape[0])
+    background = background_magnitude(magnitude, unmasked, min_background_frames)
     fill = torch.minimum(magnitude, background[:, None]) if mode == "cap" else background[:, None].expand_as(magnitude)
     cleaned = magnitude * (1 - mask) + mask * fill
     return torch.istft(torch.polar(cleaned, phase), N_FFT, hop_length=HOP, win_length=WIN_LENGTH, window=window, center=True,
                        length=waveform.shape[0])
+
+
+def remove_anomaly(waveform: torch.Tensor, mask_fbank: torch.Tensor, min_background_frames: int = 5, mode: str = "replace") -> torch.Tensor:
+    """:func:`remove_from_stft` with a mask on the grid of the filterbank (``(frames, 128)`` in [0, 1])."""
+    if mode not in FILLS:
+        raise ValueError(f"mode must be one of {FILLS}, got {mode!r}")
+    return remove_from_stft(waveform, to_stft_grid(mask_fbank, stft_frames(waveform.shape[0])), min_background_frames, mode)
+
+
+def refine_mask(waveform: torch.Tensor, coarse: torch.Tensor, margin_db: float = 3.0, min_background_frames: int = 5) -> torch.Tensor:
+    """The coarse STFT mask restricted to the cells that really stick out: those above the background of their frequency (the median
+    outside the mask) by ``margin_db``. The map of the model says where (160 ms x 16 bands), the energy of the clip says what."""
+    magnitude = _stft(waveform)[0].abs()
+    background = background_magnitude(magnitude, coarse < 0.5, min_background_frames)
+    active = (magnitude > background[:, None] * 10 ** (margin_db / 20)).float()[None, None]
+    active = F.avg_pool2d(F.max_pool2d(active, 3, stride=1, padding=1), 3, stride=1, padding=1)[0, 0]
+    return coarse * active.clamp(0, 1)
 
 
 def si_sdr(estimate: torch.Tensor, reference: torch.Tensor) -> float:
@@ -192,6 +274,24 @@ def removal_metrics(cleaned: torch.Tensor, mixture: torch.Tensor, anomaly: torch
 def area_threshold(anomaly_map: np.ndarray, fraction: float) -> float:
     """The threshold that keeps the ``fraction`` of the pixels of the map with the highest values (a mask as big as the true one)."""
     return float(np.quantile(anomaly_map, 1.0 - min(max(fraction, 1e-4), 0.999)))
+
+
+def adaptive_threshold(anomaly_map: np.ndarray, relative: float) -> float:
+    """A threshold that follows the clip: ``relative`` of the way from the lowest to the highest value of its map."""
+    low, high = float(np.min(anomaly_map)), float(np.max(anomaly_map))
+    return low + relative * (high - low)
+
+
+def normalise_map(anomaly_map: np.ndarray, tau: float) -> np.ndarray:
+    """The map in units of its own threshold (1 = at the threshold), so that the maps of two models can be combined."""
+    return anomaly_map / tau if tau > 0 else anomaly_map - tau + 1.0
+
+
+def fuse_maps(maps: dict[str, np.ndarray], taus: dict[str, float], how: str = "and") -> np.ndarray:
+    """The maps of several models in units of their thresholds, combined: ``and`` = the minimum (a pixel counts only if every model
+    flags it), ``avg`` = the mean. The fused map is at its threshold where it is 1."""
+    stack = np.stack([normalise_map(m, taus[name]) for name, m in maps.items()])
+    return stack.min(axis=0) if how == "and" else stack.mean(axis=0)
 
 
 def percentile_of(score: float, normal_scores: np.ndarray) -> float:
@@ -238,52 +338,157 @@ def localisation_metrics(anomaly_map: np.ndarray, truth: np.ndarray, tau: float)
     return out
 
 
+def iterative_remove(detector: Detector, waveform: torch.Tensor, tau: float, mode: str, iterations: int, limit: float):
+    """Remove, look again and remove what the model still flags: up to ``iterations`` times, and not at all if the score of the clip
+    is already at most ``limit`` (a normal clip). Returns the cleaned clip and the union of the masks."""
+    current = waveform
+    union = torch.zeros(N_FFT // 2 + 1, stft_frames(waveform.shape[0]))
+    for _ in range(iterations):
+        anomaly_map, score = detector.map_and_score(current)
+        if score <= limit:
+            break
+        mask = to_stft_grid(maps_to_mask(torch.as_tensor(anomaly_map), tau), union.shape[1])
+        union = torch.maximum(union, mask)
+        current = remove_from_stft(current, mask, mode=mode)
+    return current, union
+
+
+def _fixed_apply(mask: torch.Tensor):
+    return lambda w, mode: (remove_from_stft(w, mask, mode=mode), mask)
+
+
+def _fine_apply(coarse: torch.Tensor, margin_db: float):
+    def apply(w, mode):
+        mask = refine_mask(w, coarse, margin_db)
+        return remove_from_stft(w, mask, mode=mode), mask
+    return apply
+
+
+def _iterative_apply(detector: Detector, tau: float, iterations: int, limit: float):
+    return lambda w, mode: iterative_remove(detector, w, tau, mode, iterations, limit)
+
+
+def _subtract_apply(separator, prompt: str):
+    return lambda w, mode: (w - separator(w, prompt), None)
+
+
+class AudioSepSeparator:
+    """AudioSep (text-queried source separation) run in its own environment, one process per clip: the separated source is
+    subtracted from the clip. Needs the AudioSep repository, its checkpoint and a python with its requirements."""
+
+    def __init__(self, python: str, repo: Path, checkpoint: Path | None = None, device: str = "cuda"):
+        self.python, self.repo, self.device = python, Path(repo).expanduser().resolve(), device
+        self.checkpoint = Path(checkpoint).expanduser().resolve() if checkpoint else self.repo / "checkpoint" / "audiosep_base_4M_steps.ckpt"
+
+    def __call__(self, waveform: torch.Tensor, prompt: str) -> torch.Tensor:
+        import subprocess
+        import tempfile
+
+        import torchaudio.functional as AF
+        from scipy.io import wavfile
+
+        scale = 0.9 / float(waveform.abs().max().clamp_min(1e-8))
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp) / "mixture.wav", Path(tmp) / "separated.wav"
+            save_wav(source, waveform, scale)
+            code = ("import os, sys, torch; repo, ckpt, src, text, out, dev = sys.argv[1:7]; os.chdir(repo); sys.path.insert(0, repo); "
+                    "from pipeline import build_audiosep, inference; device = torch.device(dev); "
+                    "model = build_audiosep(config_yaml='config/audiosep_base.yaml', checkpoint_path=ckpt, device=device); "
+                    "inference(model, src, text, out, device)")
+            subprocess.run([self.python, "-c", code, str(self.repo), str(self.checkpoint), str(source), prompt, str(target), self.device], check=True)
+            rate, data = wavfile.read(target)
+        data = torch.from_numpy(data.astype(np.float32) / (32768.0 if data.dtype == np.int16 else 1.0))
+        if data.ndim > 1:
+            data = data.mean(dim=1)
+        estimate = AF.resample(data, rate, SAMPLE_RATE) / scale
+        out = torch.zeros_like(waveform)
+        n = min(len(out), len(estimate))
+        out[:n] = estimate[:n]
+        return out
+
+
 def process_example(detectors: dict[str, Detector], mixture: torch.Tensor, anomaly: torch.Tensor, truth_mask: np.ndarray, label: str,
                     quantiles: tuple[float, ...] = (0.95,), modes: tuple[str, ...] = ("replace",), normal_quantile: float = 0.95,
-                    save=None, main_threshold: str | None = None, main_mode: str | None = None) -> list[dict]:
-    """One row per mask, threshold and way of filling it.
+                    save=None, main_threshold: str | None = None, main_mode: str | None = None, extras: tuple[str, ...] = EXTRAS,
+                    separator=None, prompt: str = "", iterations: int = 3, relative: float = 0.5, margin_db: float = 3.0) -> list[dict]:
+    """One row per method, mask and way of filling it.
 
     Masks: every detector with a threshold per quantile (``q0.95``...) and with the area of the true mask (``area``, which separates the
-    quality of the localisation from the choice of the threshold), and ``oracle`` (the true mask: the best a mask can do). Each cleaned
-    clip is judged against the background inside the clip (``mixture - anomaly``) and scored again by every detector.
-    ``save(mask, cleaned)`` is called for the main threshold and mode (default: the first ones) and for the oracle.
+    quality of the localisation from the choice of the threshold), and ``oracle`` (the true mask: the best a mask can do). ``extras``:
+    ``adaptive`` (a threshold that follows the clip: ``rel0.5``), ``fine`` (the mask of the main threshold restricted to the cells that
+    stick out of the background in the STFT), ``fusion`` (the maps of the two models combined: ``and``, ``avg``), ``iterative`` (remove,
+    look again, remove). ``separator``: AudioSep subtracted from the clip (``audiosep``). Each cleaned clip is judged against the
+    background inside the clip (``mixture - anomaly``) and scored again by every detector. As a control the same procedure is applied to
+    that background alone: ``control_error_db`` is how much it changes it and ``pct_<model>_control`` where the score of the result falls.
+    ``save(key, cleaned)`` is called for the main threshold and filling of each method, and for the oracle.
     """
     reference = mixture - anomaly
     main_threshold = main_threshold or f"q{quantiles[0]:g}"
+    main_q = float(main_threshold[1:])
     main_mode = main_mode or modes[0]
-    maps, mixture_scores, reference_scores = {}, {}, {}
+    maps, mixture_scores, reference_scores, limits = {}, {}, {}, {}
     for name, detector in detectors.items():
         maps[name], mixture_scores[name] = detector.map_and_score(mixture)
         reference_scores[name] = detector.map_and_score(reference)[1]
+        limits[name] = float(np.quantile(detector.normal_scores, normal_quantile)) if len(detector.normal_scores) else float("inf")
     truth = torch.as_tensor(truth_mask).float()
     truth_fraction = float(truth.mean())
-    variants = []  # (mask, threshold label, mask tensor, localisation metrics)
+    frames = stft_frames(mixture.shape[0])
+    on_stft = lambda fbank_mask: to_stft_grid(fbank_mask, frames)  # noqa: E731
+    variants: list[dict] = []
+
+    def add(mask, threshold, apply, localisation=None, key=None, fills=None):
+        variants.append({"mask": mask, "threshold": threshold, "apply": apply, "loc": localisation or {}, "key": key, "fills": fills})
+
     for name, detector in detectors.items():
+        amap, tensor = maps[name], torch.as_tensor(maps[name])
         for q in quantiles:
             tau = detector.thresholds[q]
-            variants.append((name, f"q{q:g}", maps_to_mask(torch.as_tensor(maps[name]), tau), localisation_metrics(maps[name], truth_mask, tau)))
-        tau = area_threshold(maps[name], truth_fraction)
-        variants.append((name, "area", maps_to_mask(torch.as_tensor(maps[name]), tau), localisation_metrics(maps[name], truth_mask, tau)))
-    variants.append(("oracle", "truth", maps_to_mask(truth, 0.5), {}))
+            add(name, f"q{q:g}", _fixed_apply(on_stft(maps_to_mask(tensor, tau))), localisation_metrics(amap, truth_mask, tau), name if q == main_q else None)
+        tau = area_threshold(amap, truth_fraction)
+        add(name, "area", _fixed_apply(on_stft(maps_to_mask(tensor, tau))), localisation_metrics(amap, truth_mask, tau))
+        if "adaptive" in extras:
+            tau = adaptive_threshold(amap, relative)
+            add(name, f"rel{relative:g}", _fixed_apply(on_stft(maps_to_mask(tensor, tau))), localisation_metrics(amap, truth_mask, tau))
+        if "fine" in extras:
+            coarse = on_stft(maps_to_mask(tensor, detector.thresholds[main_q]))
+            add(name, f"q{main_q:g}+fine", _fine_apply(coarse, margin_db), key=f"{name}+fine")
+        if "iterative" in extras:
+            add(name, f"q{main_q:g}x{iterations}", _iterative_apply(detector, detector.thresholds[main_q], iterations, limits[name]), key=f"{name}+iter")
+    if "fusion" in extras and len(detectors) > 1:
+        taus = {name: detector.thresholds[main_q] for name, detector in detectors.items()}
+        for how in ("and", "avg"):
+            fused = fuse_maps(maps, taus, how)
+            add("fused", how, _fixed_apply(on_stft(maps_to_mask(torch.as_tensor(fused), 1.0))), localisation_metrics(fused, truth_mask, 1.0),
+                "fused" if how == "and" else None)
+    add("oracle", "truth", _fixed_apply(on_stft(maps_to_mask(truth, 0.5))), key="oracle")
+    if separator is not None:
+        add("audiosep", "text", _subtract_apply(separator, prompt), key="audiosep", fills=("subtract",))
     mixture_sdr = si_sdr(mixture, reference)
+    reference_energy = float(reference.double() @ reference.double())
     rows = []
-    for mask_name, threshold, mask, localisation in variants:
-        for mode in modes:
-            cleaned = remove_anomaly(mixture, mask, mode=mode)
-            if save is not None and threshold in (main_threshold, "truth") and mode == main_mode:
-                save(mask_name, cleaned)
-            row = {"example": label, "mask": mask_name, "threshold": threshold, "mode": mode, "mask_fraction": float(mask.mean()),
+    for variant in variants:
+        for mode in variant["fills"] or modes:
+            cleaned, mask = variant["apply"](mixture, mode)
+            control = variant["apply"](reference, mode)[0]
+            if save is not None and variant["key"] and mode in (main_mode, "subtract") and variant["threshold"] in (main_threshold, "truth", "and", "text", f"q{main_q:g}+fine", f"q{main_q:g}x{iterations}"):
+                save(variant["key"], cleaned)
+            row = {"example": label, "mask": variant["mask"], "threshold": variant["threshold"], "mode": mode,
+                   "mask_fraction": float(mask.mean()) if mask is not None else float("nan"),
                    "si_sdr_mixture": mixture_sdr, **removal_metrics(cleaned, mixture, anomaly)}
             row["si_sdr_gain"] = row["si_sdr_cleaned"] - mixture_sdr
-            row.update({f"loc_{k}": v for k, v in localisation.items()})
+            diff = control.double() - reference.double()
+            row["control_error_db"] = float(10 * np.log10(max(float(diff @ diff), 1e-20) / max(reference_energy, 1e-20)))
+            row.update({f"loc_{k}": v for k, v in variant["loc"].items()})
             for name, detector in detectors.items():
                 after = detector.map_and_score(cleaned)[1]
-                limit = float(np.quantile(detector.normal_scores, normal_quantile)) if len(detector.normal_scores) else float("inf")
+                after_control = detector.map_and_score(control)[1]
                 row.update({f"score_{name}_mixture": mixture_scores[name], f"score_{name}_cleaned": after,
                             f"score_{name}_background": reference_scores[name],
                             f"pct_{name}_mixture": percentile_of(mixture_scores[name], detector.normal_scores),
                             f"pct_{name}_cleaned": percentile_of(after, detector.normal_scores),
-                            f"normal_{name}_cleaned": bool(after <= limit)})
+                            f"pct_{name}_control": percentile_of(after_control, detector.normal_scores),
+                            f"normal_{name}_cleaned": bool(after <= limits[name])})
             rows.append(row)
     return rows
 
@@ -301,7 +506,7 @@ def save_figure(path: Path, mixture, background, maps: dict[str, np.ndarray], tr
     spec = lambda w: fbank(w.float().unsqueeze(0))[0, 0].T.numpy()  # noqa: E731  (mel bins x frames)
     panels = [("mixture", spec(mixture)), ("true background", spec(background)), ("ground-truth mask", truth.T)]
     panels += [(f"map: {name}", m.T) for name, m in maps.items()]
-    panels += [(f"cleaned ({name} mask)", spec(w)) for name, w in cleaned.items()]
+    panels += [(f"cleaned ({name})", spec(w)) for name, w in cleaned.items()]
     columns = 4
     rows = -(-len(panels) // columns)
     fig, axes = plt.subplots(rows, columns, figsize=(4 * columns, 2.6 * rows))
@@ -383,14 +588,15 @@ def load_base_config(path: Path) -> dict:
 def summary_table(rows: list[dict], detectors: list[str], mode: str | None = None) -> str:
     """The rows of one way of filling (default: the first found), one per example, mask and threshold."""
     mode = mode or rows[0]["mode"]
-    header = ["example", "mask", "threshold", "mask area", "anomaly removed (dB)", "background error (dB)"]
+    header = ["example", "mask", "threshold", "mask area", "anomaly removed (dB)", "background error (dB)", "control error (dB)"]
     for name in detectors:
         header += [f"{name}: score pct before", f"{name}: score pct after", f"{name}: normal?"]
     lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     for r in rows:
-        if r["mode"] != mode:
+        if r["mode"] not in (mode, "subtract"):
             continue
-        cells = [r["example"], r["mask"], r["threshold"], f"{100 * r['mask_fraction']:.0f}%", f"{r['anomaly_removed_db']:.1f}", f"{r['background_error_db']:.1f}"]
+        cells = [r["example"], r["mask"], r["threshold"], f"{100 * r['mask_fraction']:.0f}%", f"{r['anomaly_removed_db']:.1f}", f"{r['background_error_db']:.1f}",
+                 f"{r['control_error_db']:.1f}"]
         for name in detectors:
             cells += [f"{r[f'pct_{name}_mixture']:.2f}", f"{r[f'pct_{name}_cleaned']:.2f}", "yes" if r[f"normal_{name}_cleaned"] else "no"]
         lines.append("| " + " | ".join(cells) + " |")
@@ -402,7 +608,7 @@ def aggregate_table(rows: list[dict], detectors: list[str]) -> str:
     groups: dict[tuple, list[dict]] = {}
     for r in rows:
         groups.setdefault((r["mask"], r["threshold"], r["mode"]), []).append(r)
-    header = ["mask", "threshold", "fill", "examples", "mask area", "anomaly removed (dB)", "background error (dB)", "pixel AUC", "IoU"]
+    header = ["mask", "threshold", "fill", "examples", "mask area", "anomaly removed (dB)", "background error (dB)", "control error (dB)", "pixel AUC", "IoU"]
     for name in detectors:
         header += [f"{name}: normal after"]
     lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
@@ -410,7 +616,7 @@ def aggregate_table(rows: list[dict], detectors: list[str]) -> str:
     for (mask, threshold, mode), group in groups.items():
         cells = [mask, threshold, mode, str(len(group)), f"{100 * mean([r['mask_fraction'] for r in group]):.0f}%",
                  f"{mean([r['anomaly_removed_db'] for r in group]):.1f}", f"{mean([r['background_error_db'] for r in group]):.1f}",
-                 f"{mean([r.get('loc_pixel_auc', '') for r in group]):.2f}", f"{mean([r.get('loc_iou', '') for r in group]):.2f}"]
+                 f"{mean([r['control_error_db'] for r in group]):.1f}", f"{mean([r.get('loc_pixel_auc', '') for r in group]):.2f}", f"{mean([r.get('loc_iou', '') for r in group]):.2f}"]
         for name in detectors:
             cells.append(f"{sum(bool(r[f'normal_{name}_cleaned']) for r in group)}/{len(group)}")
         lines.append("| " + " | ".join(cells) + " |")
@@ -418,8 +624,9 @@ def aggregate_table(rows: list[dict], detectors: list[str]) -> str:
 
 
 def run_combo(base: dict, background_name: str, snr: float, seed: int, examples: int, output: Path, quantiles: tuple[float, ...],
-              models_dir: Path | None = None, retrain: bool = False, modes: tuple[str, ...] = ("sample", "replace", "cap"),
-              main_quantile: float | None = None, main_mode: str | None = None) -> list[dict]:
+              models_dir: Path | None = None, retrain: bool = False, modes: tuple[str, ...] = ("sample", "replace", "cap", "nmf"),
+              main_quantile: float | None = None, main_mode: str | None = None, extras: tuple[str, ...] = EXTRAS,
+              separator=None, iterations: int = 3) -> list[dict]:
     from moviad.datasets.audio_dataset import SpectrogramBinarizer
     from benchmark_common import fit_model, make_model, resolve_device, set_seed
     from run_beats_benchmark import build_config
@@ -480,7 +687,8 @@ def run_combo(base: dict, background_name: str, snr: float, seed: int, examples:
 
         background = sample.audio_clip - sample.anomaly_clip  # the background that is really inside the clip (bg_clip is louder: see README)
         rows += process_example(detectors, sample.audio_clip, sample.anomaly_clip, truth, label, quantiles=quantiles, modes=modes, save=save,
-                                main_threshold=None if main_quantile is None else f"q{main_quantile:g}", main_mode=main_mode)
+                                main_threshold=None if main_quantile is None else f"q{main_quantile:g}", main_mode=main_mode,
+                                extras=extras, separator=separator, prompt=str(category).replace("_", " "), iterations=iterations)
         save_wav(folder / "1_before.wav", sample.audio_clip, scale)  # the same scale for every file of the example: the levels are comparable
         save_wav(folder / "5_true_background.wav", background, scale)
         save_wav(folder / "6_anomaly_only.wav", sample.anomaly_clip, scale)
@@ -504,21 +712,33 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1, help="not 0: with 0 the contamination of EnvMix is not seeded")
     parser.add_argument("--quantiles", nargs="+", type=float, default=[0.9, 0.95, 0.99],
                         help="the map thresholds: these quantiles of the pixels of the normal test clips (every one is evaluated)")
-    parser.add_argument("--modes", nargs="+", choices=("replace", "cap", "sample"), default=["sample", "replace", "cap"], help="how the masked part is filled")
+    parser.add_argument("--modes", nargs="+", choices=FILLS, default=["sample", "replace", "cap", "nmf"], help="how the masked part is filled")
     parser.add_argument("--main-quantile", type=float, default=0.95, help="the threshold of the wav files and of the main table")
-    parser.add_argument("--main-mode", choices=("replace", "cap", "sample"), default="sample", help="the way of filling of the wav files and of the main table")
+    parser.add_argument("--main-mode", choices=FILLS, default="sample", help="the way of filling of the wav files and of the main table")
+    parser.add_argument("--extras", nargs="*", choices=EXTRAS, default=list(EXTRAS), help="the families of methods to try besides the plain thresholds")
+    parser.add_argument("--iterations", type=int, default=3, help="the maximum number of rounds of the iterative removal")
+    parser.add_argument("--audiosep-python", help="python of an environment with AudioSep installed: enables the AudioSep separation")
+    parser.add_argument("--audiosep-dir", type=Path, help="the AudioSep repository (it holds config/ and checkpoint/)")
+    parser.add_argument("--audiosep-checkpoint", type=Path, help="default: <audiosep-dir>/checkpoint/audiosep_base_4M_steps.ckpt")
     parser.add_argument("--models-dir", type=Path, default=Path("results/paper_benchmark/anomaly_removal_models"),
                         help="where the trained models are saved and loaded from (a repeated run does not train again)")
     parser.add_argument("--retrain", action="store_true", help="train again even if a saved model exists")
     parser.add_argument("--no-save", action="store_true", help="do not save or load models")
     args = parser.parse_args()
     base = load_base_config(args.base_config)
+    quantiles = tuple(sorted(set(args.quantiles) | {args.main_quantile}))
+    separator = None
+    if args.audiosep_python:
+        if not args.audiosep_dir:
+            parser.error("--audiosep-python needs --audiosep-dir")
+        separator = AudioSepSeparator(args.audiosep_python, args.audiosep_dir, args.audiosep_checkpoint)
     all_rows: list[dict] = []
     for combo in args.combos:
         background, snr = combo.rsplit(":", 1)
         print(f"\n===== {background} at {float(snr):g} dB", flush=True)
-        all_rows += run_combo(base, background, float(snr), args.seed, args.examples_per_combo, args.output_dir, tuple(args.quantiles),
-                              None if args.no_save else args.models_dir, args.retrain, tuple(args.modes), args.main_quantile, args.main_mode)
+        all_rows += run_combo(base, background, float(snr), args.seed, args.examples_per_combo, args.output_dir, quantiles,
+                              None if args.no_save else args.models_dir, args.retrain, tuple(args.modes), args.main_quantile, args.main_mode,
+                              tuple(args.extras), separator, args.iterations)
         if all_rows:  # written after every combo: a crash keeps what is done
             args.output_dir.mkdir(parents=True, exist_ok=True)
             fields = list(dict.fromkeys(k for row in all_rows for k in row))

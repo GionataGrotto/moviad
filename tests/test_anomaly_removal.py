@@ -115,7 +115,7 @@ def test_the_experiment_scores_the_cleaned_clip_with_every_detector_and_against_
     saved = {}
     truth = tone_mask(frames, low=30, high=90).numpy()
     rows = ar.process_example({"energy": detector}, mixture, tone, truth, "demo", quantiles=(0.99, 0.9), modes=("replace", "cap"),
-                              save=lambda v, w: saved.update({v: w}))
+                              save=lambda v, w: saved.update({v: w}), extras=())
     assert {(r["mask"], r["threshold"]) for r in rows} == {("energy", "q0.99"), ("energy", "q0.9"), ("energy", "area"), ("oracle", "truth")}
     assert len(rows) == 8 and set(saved) == {"energy", "oracle"}  # saved: the main threshold (the first) and the oracle
     for row in rows:
@@ -128,8 +128,72 @@ def test_the_experiment_scores_the_cleaned_clip_with_every_detector_and_against_
     assert oracle["score_energy_cleaned"] < 0.6 * oracle["score_energy_mixture"]
     tight = tone_mask(frames, low=41, high=47).numpy()  # the pixels that really hold the tone
     assert ar.localisation_metrics(detector.map_and_score(mixture)[0], tight, detector.thresholds[0.99])["pixel_auc"] > 0.9
+    assert all(np.isfinite(r["control_error_db"]) and 0 <= r["pct_energy_control"] <= 1 for r in rows)
     assert ar.summary_table(rows, ["energy"], "replace").count(chr(10)) == 5
     assert ar.aggregate_table(rows, ["energy"]).count(chr(10)) == 9
+
+
+def _toy_detector(limit_quantile=0.99):
+    detector = ar.Detector("energy", EnergyDetector(), torch.device("cpu"))
+    maps, scores = [], []
+    for seed in range(1, 21):
+        m, s = detector.map_and_score(make_clip(seed=seed)[1])
+        maps.append(m)
+        scores.append(s)
+    pixels = np.concatenate([m.ravel() for m in maps])
+    detector.thresholds = {0.95: float(np.quantile(pixels, 0.95))}
+    detector.normal_scores = np.array(scores)
+    return detector
+
+
+def test_every_family_of_methods_gives_rows_with_the_control_and_the_files_to_save():
+    mixture, background, tone = make_clip()
+    frames = BEATsFeatureExtractor.fbank_shape(mixture.shape[0])[0]
+    detector = _toy_detector()
+    saved = {}
+    rows = ar.process_example({"energy": detector}, mixture, tone, tone_mask(frames, low=30, high=90).numpy(), "demo", quantiles=(0.95,),
+                              modes=("sample", "nmf"), save=lambda k, w: saved.update({k: w}), main_mode="sample", iterations=2)
+    thresholds = {r["threshold"] for r in rows}
+    assert {"q0.95", "area", "rel0.5", "q0.95+fine", "q0.95x2", "truth"} <= thresholds
+    assert {"energy", "energy+fine", "energy+iter", "oracle"} <= set(saved)
+    assert {r["mode"] for r in rows} == {"sample", "nmf"} and all(k in ar.AFTER_FILES for k in ("patchcore", "dinomaly", "patchcore+fine", "dinomaly+fine", "fused", "patchcore+iter", "dinomaly+iter", "audiosep", "oracle"))
+    oracle = [r for r in rows if r["mask"] == "oracle" and r["mode"] == "nmf"][0]
+    assert oracle["anomaly_removed_db"] > 8
+
+
+def test_a_separator_is_subtracted_and_a_normal_clip_is_left_alone_by_the_iterative_removal():
+    mixture, background, tone = make_clip()
+    frames = BEATsFeatureExtractor.fbank_shape(mixture.shape[0])[0]
+    detector = _toy_detector()
+    prompts = []
+
+    def perfect(waveform, prompt):  # a separator that knows the tone
+        prompts.append(prompt)
+        return tone
+
+    rows = ar.process_example({"energy": detector}, mixture, tone, tone_mask(frames, low=30, high=90).numpy(), "demo", quantiles=(0.95,),
+                              modes=("sample",), extras=("iterative",), separator=perfect, prompt="car horn", iterations=2)
+    audiosep = [r for r in rows if r["mask"] == "audiosep"][0]
+    assert audiosep["mode"] == "subtract" and audiosep["anomaly_removed_db"] > 40 and prompts == ["car horn", "car horn"]  # the clip and its control
+    iterative = [r for r in rows if r["threshold"] == "q0.95x2"][0]
+    normal_clip = make_clip(seed=99)[1]
+    cleaned, union = ar.iterative_remove(detector, normal_clip, detector.thresholds[0.95], "sample", 2, float("inf"))
+    assert torch.equal(cleaned, normal_clip) and union.sum() == 0  # the score is below the limit: nothing to remove
+    assert iterative["anomaly_removed_db"] > 3
+
+
+def test_the_fine_mask_keeps_only_what_sticks_out_and_the_fusion_needs_both_models():
+    mixture, _, tone = make_clip()
+    frames = BEATsFeatureExtractor.fbank_shape(mixture.shape[0])[0]
+    coarse = ar.to_stft_grid(tone_mask(frames, low=20, high=110), ar.stft_frames(mixture.shape[0]))
+    fine = ar.refine_mask(mixture, coarse, margin_db=6.0)
+    assert fine.mean() < coarse.mean() and fine.mean() > 0  # the tone (1.5-2.5 s, around 1 kHz) is inside the large coarse mask
+    maps = {"a": np.array([[2.0, 0.5], [2.0, 2.0]]), "b": np.array([[2.0, 2.0], [0.5, 2.0]])}
+    taus = {"a": 1.0, "b": 1.0}
+    assert (ar.fuse_maps(maps, taus, "and") > 1).tolist() == [[True, False], [False, True]]
+    assert (ar.fuse_maps(maps, taus, "avg") > 1).all()
+    assert ar.normalise_map(np.array([2.0]), 2.0)[0] == 1.0 and ar.normalise_map(np.array([0.0]), -1.0)[0] == 2.0
+    assert 0.0 < ar.adaptive_threshold(np.array([0.0, 4.0]), 0.5) == 2.0
 
 
 def test_the_removal_metrics_tell_an_untouched_clip_from_a_clean_one():
@@ -157,6 +221,8 @@ def test_replace_fills_the_masked_cells_with_the_background_and_cap_only_lowers_
     mixture, background_only, tone = make_clip()
     cleaned = ar.remove_anomaly(mixture, tone_mask(frames, low=35, high=85), mode="sample")
     assert ar.removal_metrics(cleaned, mixture, tone)["anomaly_removed_db"] > 8
+    nmf = ar.remove_anomaly(quiet_hole, mask, mode="nmf")
+    assert nmf.shape == quiet_hole.shape and torch.isfinite(nmf).all()
     with pytest.raises(ValueError):
         ar.remove_anomaly(quiet_hole, mask, mode="other")
 
