@@ -351,6 +351,18 @@ _define("dino_beats_ls_mask_tw", "Dinomaly on masked-patch BEATs + LS, balanced 
          "dcase2026": {**_BOTH, **_LS, **_dino_mean}}, {"dinomaly"})
 PRESETS["dinomaly_beats"] = [name for name in EXPERIMENTS if name.startswith("dino_beats_")]
 
+# Final runs (run_dcase_final.py): the best PatchCore without one of its pieces, and STFPM on BEATs with the 10 target clips
+_define("abl_q10_no_ls", "PatchCore banks + std + 10% target quota on the near channel (no LS)",
+        _patchcore(patchcore_target_fraction=0.10, dcase={"channel": 0}), {"patchcore"})
+_define("abl_q10_no_std", "PatchCore LS + per-band banks + 10% target quota, scores not standardised",
+        {**BEATS_LATE, "patchcore_band_banks": True, "patchcore_target_fraction": 0.10, "dcase2026": {**_BOTH, **_LS}}, {"patchcore"})
+_define("abl_q10_no_banks_std", "PatchCore LS + 10% target quota, one bank and no standardisation",
+        {**BEATS_LATE, "patchcore_target_fraction": 0.10, "dcase2026": {**_BOTH, **_LS}}, {"patchcore"})
+_define("stfpm_beats_ls_both", "STFPM on BEATs 8,10,12 + LS, AdamW lr 1e-5, + 10 target clips",
+        {**BEATS_LATE, "stfpm_optimizer": "adamw", "stfpm_lr": 1e-5, "dcase2026": {**_BOTH, **_LS}}, {"stfpm"})
+_define("stfpm_beats_b12_ls_both", "STFPM on BEATs block 12 + LS, AdamW lr 1e-5, + 10 target clips",
+        {"backbone": "BEATs", "layers": [12], "stfpm_optimizer": "adamw", "stfpm_lr": 1e-5, "dcase2026": {**_BOTH, **_LS}}, {"stfpm"})
+
 
 def build_config(base: dict, name: str, epochs: int | None, aggregation: str = "temporal_topk_mean", suffix: str = "",
                  extra_aggregations: tuple[str, ...] = ()) -> dict:
